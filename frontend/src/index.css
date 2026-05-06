@@ -1,0 +1,85 @@
+@import url("https://rsms.me/inter/inter.css");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #faf7f2;
+    --bg-elev: #ffffff;
+    --bg-sunken: #f2eee7;
+    --border: #e7e1d6;
+    --border-strong: #d8d1c2;
+
+    --ink: #1f1b16;
+    --ink-2: #4a4339;
+    --ink-3: #75695a;
+    --ink-4: #a39785;
+    --ink-5: #c9bfad;
+
+    --accent: oklch(0.62 0.13 50);
+    --accent-soft: oklch(0.62 0.13 50 / 0.12);
+    --accent-hover: oklch(0.56 0.13 50);
+    --accent-ink: oklch(0.98 0.02 80);
+
+    --ok: oklch(0.58 0.12 155);
+    --ok-soft: oklch(0.58 0.12 155 / 0.14);
+    --warn: oklch(0.72 0.14 75);
+    --warn-soft: oklch(0.72 0.14 75 / 0.18);
+    --err: oklch(0.58 0.17 27);
+    --err-soft: oklch(0.58 0.17 27 / 0.14);
+    --info: oklch(0.58 0.12 240);
+    --info-soft: oklch(0.58 0.12 240 / 0.14);
+
+    --jira: oklch(0.55 0.18 255);
+  }
+
+  [data-theme="dark"] {
+    --bg: #161310;
+    --bg-elev: #1f1b17;
+    --bg-sunken: #12100d;
+    --border: #2a241d;
+    --border-strong: #3a3127;
+
+    --ink: #f5efe4;
+    --ink-2: #d8cfbf;
+    --ink-3: #aaa090;
+    --ink-4: #80776a;
+    --ink-5: #5a534a;
+
+    --accent: oklch(0.7 0.13 50);
+    --accent-soft: oklch(0.7 0.13 50 / 0.18);
+    --accent-hover: oklch(0.78 0.13 50);
+    --accent-ink: oklch(0.16 0.04 60);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+
+  *::selection {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+}
+
+@layer components {
+  .shimmer-bg {
+    background-image: linear-gradient(
+      90deg,
+      var(--accent) 0%,
+      var(--accent-hover) 50%,
+      var(--accent) 100%
+    );
+    background-size: 200% 100%;
+  }
+}

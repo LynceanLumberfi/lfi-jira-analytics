@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Lumber × Jira — Integration POC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="data.js"></script>
+<script type="text/babel" src="ui.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script src="data-issues.js"></script>
+<script type="text/babel" src="screens-overview.jsx"></script>
+<script type="text/babel" src="screens-workspace.jsx"></script>
+<script type="text/babel" src="screens-a.jsx"></script>
+<script type="text/babel" src="screens-b.jsx"></script>
+<script type="text/babel" src="screens-c.jsx"></script>
+<script type="text/babel" src="screens-d.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "light",
+  "demoState": "conflict-heavy",
+  "showArchitecture": false
+}/*EDITMODE-END*/;
+
+const TEAMS = [
+  { key: 'all',     label: 'All Teams',           jiraTeams: ['Platform', 'SRE', 'Growth', 'Data', 'Mobile', 'Frontend'] },
+  { key: 'fields',  label: 'Fields & Backoffice', jiraTeams: ['Platform', 'SRE'] },
+  { key: 'hr',      label: 'HR & People Ops',     jiraTeams: ['Growth', 'Data'] },
+  { key: 'builder', label: 'BuilderFax',          jiraTeams: ['Mobile', 'Frontend'] },
+];
+
+const TEAM_PAGES = [
+  { suffix: '',              label: 'Hub' },
+  { suffix: '-productivity', label: 'Resource productivity' },
+  { suffix: '-ai',           label: 'AI adaptability' },
+  { suffix: '-quality',      label: 'AI & Quality' },
+  { suffix: '-tickets',      label: 'Tickets' },
+];
+
+const ROUTES = (() => {
+  const r = {
+    'settings-cost':             { section: 'settings', label: 'Cost & Tokens' },
+
+    'integrations-home':         { section: 'settings', label: 'Integrations' },
+    'integrations-connect':      { section: 'settings', label: 'Connect Jira' },
+    'integrations-configure':    { section: 'settings', label: 'Configure sync' },
+    'integrations-sync-run':     { section: 'settings', label: 'Sync run' },
+    'integrations-review':       { section: 'settings', label: 'Review sync' },
+    'integrations-manual-map':   { section: 'settings', label: 'Manual mapping' },
+    'integrations-history':      { section: 'settings', label: 'Sync history' },
+    'integrations-failed':       { section: 'settings', label: 'Failed records' },
+  };
+  TEAMS.forEach(t => {
+    TEAM_PAGES.forEach(p => {
+      r['team-' + t.key + p.suffix] = { section: 'workspace', label: t.label + ' · ' + p.label, team: t.key };
+    });
+  });
+  return r;
+})();
+
+const INTEGRATION_SCREENS = [
+  { key: 'integrations-home',       label: '01 Home' },
+  { key: 'integrations-connect',    label: '02 Connect' },
+  { key: 'integrations-configure',  label: '03 Configure' },
+  { key: 'integrations-sync-run',   label: '04 Sync Run' },
+  { key: 'integrations-review',     label: '05 Review' },
+  { key: 'integrations-manual-map', label: '06 Map' },
+  { key: 'integrations-history',    label: '07 History' },
+  { key: 'integrations-failed',     label: '08 Failed' },
+];
+
+function App() {
+  const [tweaks, setTweak] = window.useTweaks
+    ? window.useTweaks(TWEAK_DEFAULTS)
+    : [TWEAK_DEFAULTS, () => {}];
+  const [screen, setScreen] = useState(() => {
+    const h = location.hash.replace('#', '');
+    return ROUTES[h] ? h : 'team-all';
+  });
+  const [dryRun, setDryRun] = useState(false);
+  const [showArch, setShowArch] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', tweaks.theme || 'light');
+  }, [tweaks.theme]);
+
+  useEffect(() => {
+    if (tweaks.showArchitecture) setShowArch(true);
+  }, [tweaks.showArchitecture]);
+
+  function go(k) {
+    if (!ROUTES[k]) k = 'team-all';
+    setScreen(k);
+    location.hash = k;
+    window.scrollTo({ top: 0 });
+  }
+
+  const cur = ROUTES[screen] || ROUTES['team-all'];
+  const team = TEAMS.find(t => t.key === cur.team);
+  const crumbs = (() => {
+    if (cur.section === 'workspace' && team) {
+      const isHub = screen === 'team-' + team.key;
+      if (isHub) return [{ label: team.label }];
+      const subLabel = cur.label.split(' · ')[1] || '';
+      return [{ label: team.label, onClick: () => go('team-' + team.key) }, { label: subLabel }];
+    }
+    if (cur.section === 'settings') {
+      const base = [{ label: 'Settings', onClick: () => go('settings-general') }];
+      if (screen.startsWith('integrations')) {
+        const root = [...base, { label: 'Integrations', onClick: () => go('integrations-home') }];
+        if (screen === 'integrations-home') return [{ label: 'Settings' }, { label: 'Integrations' }];
+        if (screen === 'integrations-connect')   return [...root, { label: 'Connect Jira' }];
+        if (screen === 'integrations-configure') return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Configure' }];
+        if (screen === 'integrations-sync-run')  return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Sync run' }];
+        if (screen === 'integrations-review')    return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Review sync' }];
+        if (screen === 'integrations-manual-map')return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Review sync', onClick: () => go('integrations-review') }, { label: 'Manual mapping' }];
+        // conflict screen removed — Jira is source of truth, no two-way conflicts
+        if (false)  return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Review sync', onClick: () => go('integrations-review') }, { label: 'Resolve conflict' }];
+        if (screen === 'integrations-history')   return [...root, { label: 'Sync history' }];
+        if (screen === 'integrations-failed')    return [...root, { label: 'Jira', onClick: () => go('integrations-home') }, { label: 'Errors' }];
+      }
+      return [{ label: 'Settings' }, { label: cur.label }];
+    }
+    return [{ label: cur.label }];
+  })();
+
+  const badges = { integrations: tweaks.demoState === 'has-errors' ? '11' : tweaks.demoState === 'conflict-heavy' ? '142' : tweaks.demoState === 'first-sync' || tweaks.demoState === 'empty' ? null : '4' };
+
+  const goLegacy = (k) => {
+    const map = {
+      'home': 'integrations-home',
+      'connect': 'integrations-connect',
+      'configure': 'integrations-configure',
+      'sync-run': 'integrations-sync-run',
+      'review': 'integrations-review',
+      'manual-map': 'integrations-manual-map',
+      'history': 'integrations-history',
+      'failed': 'integrations-failed',
+    };
+    go(map[k] || k);
+  };
+
+  const A = window.SCREENS_A;
+  const B = window.SCREENS_B;
+  const C = window.SCREENS_C;
+  const D = window.SCREENS_D;
+  const OV = window.SCREENS_OV;
+  const WS = window.SCREENS_WS;
+
+  const showIntegrationDropdown = cur.section === 'settings' && screen.startsWith('integrations');
+
+  return (
+    <div className="app">
+      <UI.Sidebar
+        section={cur.section}
+        screen={screen}
+        go={go}
+        badges={badges}
+        collapsed={navCollapsed}
+        onToggle={() => setNavCollapsed(c => !c)}/>
+      <div className="main">
+        <UI.Topbar
+          crumbs={crumbs}
+          actions={
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn ghost sm" onClick={() => setShowArch(true)} title="System architecture">{I.network}</button>
+              <button className="btn ghost sm" onClick={() => setTweak('theme', tweaks.theme === 'dark' ? 'light' : 'dark')} title="Toggle theme">
+                {tweaks.theme === 'dark' ? I.sun : I.shield}
+              </button>
+              {showIntegrationDropdown && (
+                <select className="select" value={screen} onChange={e => go(e.target.value)} style={{ width: 'auto', padding: '4px 8px', fontSize: 12 }}>
+                  {INTEGRATION_SCREENS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+              )}
+            </div>
+          }
+        />
+
+        {cur.section === 'workspace' && team && (() => {
+          const suffix = screen.replace('team-' + team.key, '');
+          if (suffix === '' || suffix === '-productivity' || suffix === '-ai') return <OV.OverviewHome go={go} team={team}/>;
+          if (suffix === '-quality')  return <WS.PageQuality go={go} team={team}/>;
+          if (suffix === '-tickets')  return <WS.PageTickets go={go} team={team}/>;
+          return null;
+        })()}
+
+        {screen === 'settings-cost'         && <WS.PageCost go={go}/>}
+
+        {screen === 'integrations-home'       && <A.ScreenHome go={goLegacy} demoState={tweaks.demoState}/>}
+        {screen === 'integrations-connect'    && <A.ScreenConnect go={goLegacy}/>}
+        {screen === 'integrations-configure'  && <B.ScreenConfigure go={goLegacy} dryRun={dryRun} setDryRun={setDryRun}/>}
+        {screen === 'integrations-sync-run'   && <B.ScreenSyncRun go={goLegacy} dryRun={dryRun}/>}
+        {screen === 'integrations-review'     && <C.ScreenReview go={goLegacy} demoState={tweaks.demoState}/>}
+        {screen === 'integrations-manual-map' && <C.ScreenManualMap go={goLegacy}/>}
+        {screen === 'integrations-history'    && <D.ScreenHistory go={goLegacy}/>}
+        {screen === 'integrations-failed'     && <D.ScreenFailed go={goLegacy}/>}
+
+        {(cur.section === 'settings' && !screen.startsWith('integrations') && screen !== 'settings-cost') && (
+          <StubScreen label={cur.label} section={cur.section} go={go}/>
+        )}
+      </div>
+
+      {showArch && <D.ArchitectureView onClose={() => { setShowArch(false); setTweak('showArchitecture', false); }}/>}
+
+      {window.TweaksPanel && (
+        <window.TweaksPanel title="Tweaks">
+          <window.TweakSection title="Appearance">
+            <window.TweakRadio label="Theme" value={tweaks.theme} options={[
+              { value: 'light', label: 'Light' },
+              { value: 'dark',  label: 'Dark'  },
+            ]} onChange={v => setTweak('theme', v)}/>
+          </window.TweakSection>
+          <window.TweakSection title="Demo state">
+            <window.TweakSelect label="Scenario" value={tweaks.demoState} options={[
+              { value: 'empty',           label: 'Empty (nothing connected)' },
+              { value: 'first-sync',      label: 'First sync (just connected)' },
+              { value: 'healthy',         label: 'Healthy (steady state)' },
+              { value: 'has-errors',      label: 'Has errors (11 failed)' },
+              { value: 'conflict-heavy',  label: 'Conflict-heavy (142 to review)' },
+            ]} onChange={v => setTweak('demoState', v)}/>
+          </window.TweakSection>
+          <window.TweakSection title="Architecture">
+            <window.TweakToggle label="Show diagram overlay" value={tweaks.showArchitecture} onChange={v => { setTweak('showArchitecture', v); if (v) setShowArch(true); }}/>
+          </window.TweakSection>
+        </window.TweaksPanel>
+      )}
+    </div>
+  );
+}
+
+function StubScreen({ label, section, go }) {
+  return (
+    <div className="content" data-screen-label={label}>
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">{label}</h1>
+          <p className="page-sub">This area is part of the broader Lumber product. The integration POC lives under Settings → Integrations.</p>
+        </div>
+      </div>
+      <div className="card card-pad-lg" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: 48, textAlign: 'center' }}>
+        <div style={{ width: 56, height: 56, borderRadius: 14, background: 'var(--bg-sunken)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-3)' }}>{I.beaker}</div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>{label} — out of scope for this POC</div>
+          <p className="muted" style={{ fontSize: 13, marginTop: 6, maxWidth: 460 }}>
+            For the integration review, jump to the integrations area or the engineering overview.
+          </p>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn primary" onClick={() => go('integrations-home')}>Go to Integrations</button>
+          <button className="btn" onClick={() => go('team-fields')}>Open workspace</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
