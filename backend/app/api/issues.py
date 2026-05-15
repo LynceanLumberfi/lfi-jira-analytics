@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -17,6 +18,7 @@ from app.schemas.issues import (
     IssueMetricsOut,
     SprintRefOut,
 )
+from app.services.scoring_service import ScoringRateLimitedError, score_single
 
 router = APIRouter(prefix="/api/issues", tags=["issues"])
 
@@ -35,6 +37,7 @@ _SORT_COLUMNS = {
 @router.get("", response_model=IssueListOut)
 def list_issues(
     team_id: int | None = Query(None),
+    team_ids: list[int] | None = Query(None),
     sprint_id: int | None = Query(None),
     assignee_id: int | None = Query(None),
     project: str | None = Query(None),
@@ -42,6 +45,10 @@ def list_issues(
     issue_type: str | None = Query(None),
     epic_key: str | None = Query(None),
     has_ai_score: bool | None = Query(None),
+    has_sprint: bool | None = Query(None),
+    is_done: bool | None = Query(None),
+    resolved_since: Optional[datetime] = Query(None),
+    resolved_until: Optional[datetime] = Query(None),
     q: str | None = Query(None, description="Substring match on jira_key or summary"),
     sort: str = Query("created_at", description="created_at|updated_at|story_points|quality_score|spent_hours|estimate_hours|jira_key"),
     order: str = Query("desc", description="asc|desc"),
@@ -56,9 +63,10 @@ def list_issues(
 
     clauses: list[str] = []
     params: dict[str, Any] = {}
-    if team_id is not None:
-        clauses.append("f.team_id = :team_id")
-        params["team_id"] = team_id
+    effective_team_ids = team_ids or ([team_id] if team_id is not None else None)
+    if effective_team_ids:
+        clauses.append("f.team_id = ANY(:team_ids)")
+        params["team_ids"] = effective_team_ids
     if assignee_id is not None:
         clauses.append("f.assignee_id = :assignee_id")
         params["assignee_id"] = assignee_id
@@ -78,6 +86,14 @@ def list_issues(
         clauses.append("f.quality_score IS NOT NULL")
     elif has_ai_score is False:
         clauses.append("f.quality_score IS NULL")
+    if has_sprint is True:
+        clauses.append("f.issue_id IN (SELECT issue_id FROM issue_sprints)")
+    elif has_sprint is False:
+        clauses.append("f.issue_id NOT IN (SELECT issue_id FROM issue_sprints)")
+    if is_done is True:
+        clauses.append("f.is_done IS TRUE")
+    elif is_done is False:
+        clauses.append("f.is_done IS NOT TRUE")
     if q:
         clauses.append("(f.jira_key ILIKE :q OR f.summary ILIKE :q)")
         params["q"] = f"%{q}%"
@@ -86,6 +102,12 @@ def list_issues(
             "f.issue_id IN (SELECT issue_id FROM issue_sprints WHERE sprint_id = :sprint_id)"
         )
         params["sprint_id"] = sprint_id
+    if resolved_since is not None:
+        clauses.append("f.resolved_at >= :resolved_since")
+        params["resolved_since"] = resolved_since
+    if resolved_until is not None:
+        clauses.append("f.resolved_at < :resolved_until")
+        params["resolved_until"] = resolved_until
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sort_col = _SORT_COLUMNS[sort]
@@ -135,6 +157,25 @@ def list_issues(
     items = [IssueListItemOut(**_coerce(dict(r._mapping))) for r in rows]
 
     return IssueListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.post("/{key}/score", response_model=IssueAIScoreOut)
+def rescore_issue(key: str, db: Session = Depends(get_db)) -> IssueAIScoreOut:
+    """Re-score a single issue synchronously using claude-sonnet-4-6. Bypasses
+    batch eligibility filters and the scoring_lock."""
+    issue = db.query(Issue).filter(Issue.jira_key == key).one_or_none()
+    if issue is None:
+        raise HTTPException(status_code=404, detail=f"Issue {key} not found")
+    try:
+        row = score_single(db, issue)
+    except ScoringRateLimitedError as exc:
+        raise HTTPException(status_code=503, detail=f"Claude CLI rate-limited: {exc}")
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "already being scored" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=500, detail=msg)
+    return _ai_score_out(row)
 
 
 @router.get("/{key}", response_model=IssueDetailOut)
@@ -273,6 +314,7 @@ def _ai_score_out(row: IssueAIScore | None) -> IssueAIScoreOut | None:
             if row.description_quality_score is not None
             else None
         ),
+        ai_score=row.ai_score,
         ai_plan_detected=row.ai_plan_detected,
         skill_usage_detected=row.skill_usage_detected,
         skill_name=row.skill_name,

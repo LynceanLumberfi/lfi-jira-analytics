@@ -18,6 +18,8 @@ class TeamAggregateOut(BaseModel):
     avg_estimate_hours: float | None
     avg_spent_hours: float | None
     skill_count: int
+    skill_adopters: int
+    active_devs: int
     no_description_count: int
     over_budget_count: int
     ai_plan_count: int
@@ -98,6 +100,9 @@ class StoryTrendOut(BaseModel):
     scored_count: int
     active_resources: int
     hour_logged_count: int
+    skill_count: int
+    skill_adopters: int
+    active_delivered_devs: int
 
 
 class IssueTypeTrendOut(BaseModel):

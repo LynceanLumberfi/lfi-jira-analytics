@@ -1,6 +1,6 @@
-import { Info, Loader2 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { getIssueDetail } from "../../lib/api";
+import { Info, Loader2, RefreshCw } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getIssueDetail, rescoreIssue } from "../../lib/api";
 import { Drawer } from "./Drawer";
 import { Pill } from "./Pill";
 import { ScoreBar } from "../charts/ScoreBar";
@@ -36,12 +36,41 @@ function Row({ label, children }) {
   );
 }
 
-function Section({ title, children }) {
+function Section({ title, action, children }) {
   return (
     <div className="border-t border-border px-5 py-4">
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">{title}</p>
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">{title}</p>
+        {action}
+      </div>
       {children}
     </div>
+  );
+}
+
+function ScoreAgainButton({ issueKey }) {
+  const queryClient = useQueryClient();
+  const { mutate, isPending, isError, error } = useMutation({
+    mutationFn: () => rescoreIssue(issueKey),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["issue-detail", issueKey] });
+      queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
+  });
+
+  return (
+    <button
+      type="button"
+      onClick={() => mutate()}
+      disabled={isPending}
+      title={isError ? `Error: ${error?.message}` : "Re-score this issue"}
+      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-elev px-2 py-1 text-[11px] font-medium text-ink-2 hover:bg-bg-hover disabled:opacity-60"
+    >
+      {isPending
+        ? <Loader2 size={11} className="animate-spin" />
+        : <RefreshCw size={11} className={isError ? "text-err" : ""} />}
+      <span>{isPending ? "Scoring…" : "Score Again"}</span>
+    </button>
   );
 }
 
@@ -106,6 +135,18 @@ function IssueDetail({ issueKey }) {
         <Row label="Assignee">{issue.assignee?.display_name || <span className="text-ink-4">Unassigned</span>}</Row>
         <Row label="Reporter">{issue.reporter?.display_name || "—"}</Row>
         <Row label="Team">{issue.team?.name || "—"}</Row>
+        <Row label="Sprint">
+          {issue.sprints?.length > 0 ? (
+            <span className="flex items-center gap-1.5">
+              <span>{issue.sprints[0].name ?? "—"}</span>
+              {issue.sprints.length > 1 && (
+                <span className="text-[11px] text-ink-4">+{issue.sprints.length - 1} more</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-ink-4">—</span>
+          )}
+        </Row>
         <Row label="Epic">{issue.epic_key || "—"}</Row>
         <Row label="Story points">{issue.story_points ?? "—"}</Row>
         <Row label="Estimate">{hours(issue.time_estimate_secs)}</Row>
@@ -145,7 +186,7 @@ function IssueDetail({ issueKey }) {
       )}
 
       {/* AI score */}
-      <Section title="AI Score">
+      <Section title="AI Score" action={<ScoreAgainButton issueKey={issueKey} />}>
         {!ai ? (
           <p className="text-[13px] text-ink-4">Not scored yet.</p>
         ) : (
@@ -153,9 +194,14 @@ function IssueDetail({ issueKey }) {
             {/* Three stat tiles */}
             <div className="grid grid-cols-3 gap-2">
               <AiTile label="AI Score">
-                <Pill tone={ai.ai_plan_detected ? "ok" : "default"}>
-                  {ai.ai_plan_detected ? "Detected" : "None"}
-                </Pill>
+                <div className="flex items-center gap-1.5">
+                  <Pill tone={ai.ai_plan_detected ? "ok" : "default"}>
+                    {ai.ai_plan_detected ? "Detected" : "None"}
+                  </Pill>
+                  {ai.ai_score != null && (
+                    <span className="text-[12px] text-ink-3">{ai.ai_score} / 5</span>
+                  )}
+                </div>
               </AiTile>
               <AiTile label="Quality Score">
                 {ai.description_quality_score != null ? (

@@ -30,6 +30,9 @@ def get_filters(
     issue_type: str | None = Query(None),
     since: datetime | None = Query(None),
     until: datetime | None = Query(None),
+    resolved_since: datetime | None = Query(None),
+    resolved_until: datetime | None = Query(None),
+    has_sprint: bool | None = Query(None),
 ) -> AnalyticsFilters:
     return AnalyticsFilters(
         team_id=team_id,
@@ -39,15 +42,19 @@ def get_filters(
         issue_type=issue_type,
         since=since,
         until=until,
+        resolved_since=resolved_since,
+        resolved_until=resolved_until,
+        has_sprint=has_sprint,
     )
 
 
 @router.get("/by-team", response_model=list[TeamAggregateOut])
 def by_team(
     filters: AnalyticsFilters = Depends(get_filters),
+    team_ids: list[int] = Query(default=[]),
     db: Session = Depends(get_db),
 ) -> list[TeamAggregateOut]:
-    rows = analytics_service.by_team(db, filters)
+    rows = analytics_service.by_team(db, filters, team_ids=team_ids or None)
     return [TeamAggregateOut(**_coerce(r)) for r in rows]
 
 
@@ -85,11 +92,12 @@ def story_trends(
     project: str | None = Query(None),
     team_id: int | None = Query(None),
     team_ids: list[int] = Query(default=[]),
+    has_sprint: bool | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[StoryTrendOut]:
     rows = analytics_service.story_trends(
         db, last=last, project=project, team_id=team_id,
-        team_ids=team_ids or None,
+        team_ids=team_ids or None, has_sprint=has_sprint,
     )
     return [StoryTrendOut(**_coerce(r)) for r in rows]
 

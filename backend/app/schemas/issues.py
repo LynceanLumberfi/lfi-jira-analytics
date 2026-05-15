@@ -62,6 +62,7 @@ class SprintRefOut(BaseModel):
 class IssueAIScoreOut(BaseModel):
     scoring_status: str
     description_quality_score: float | None
+    ai_score: int | None
     ai_plan_detected: bool | None
     skill_usage_detected: bool | None
     skill_name: str | None

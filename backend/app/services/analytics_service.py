@@ -24,6 +24,9 @@ class AnalyticsFilters:
     issue_type: str | None = None
     since: datetime | None = None
     until: datetime | None = None
+    resolved_since: datetime | None = None
+    resolved_until: datetime | None = None
+    has_sprint: bool | None = None
 
 
 def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, dict[str, Any]]:
@@ -47,11 +50,23 @@ def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, di
     if filters.until is not None:
         clauses.append(f"{alias}.created_at <= :until")
         params["until"] = filters.until
+    if filters.resolved_since is not None or filters.resolved_until is not None:
+        clauses.append(f"{alias}.is_done IS TRUE")
+    if filters.resolved_since is not None:
+        clauses.append(f"{alias}.resolved_at >= :resolved_since")
+        params["resolved_since"] = filters.resolved_since
+    if filters.resolved_until is not None:
+        clauses.append(f"{alias}.resolved_at < :resolved_until")
+        params["resolved_until"] = filters.resolved_until
     if filters.sprint_id is not None:
         clauses.append(
             f"{alias}.issue_id IN (SELECT issue_id FROM issue_sprints WHERE sprint_id = :sprint_id)"
         )
         params["sprint_id"] = filters.sprint_id
+    if filters.has_sprint is True:
+        clauses.append(f"{alias}.issue_id IN (SELECT issue_id FROM issue_sprints)")
+    elif filters.has_sprint is False:
+        clauses.append(f"{alias}.issue_id NOT IN (SELECT issue_id FROM issue_sprints)")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -59,8 +74,18 @@ def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, di
 # ---------- by team ----------
 
 
-def by_team(db: Session, filters: AnalyticsFilters) -> list[dict[str, Any]]:
+def by_team(
+    db: Session,
+    filters: AnalyticsFilters,
+    *,
+    team_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     where, params = _where_clauses(filters)
+    extra: list[str] = []
+    _apply_team_filter(extra, params, None, team_ids)
+    for clause in extra:
+        term = clause.lstrip("AND ").strip()
+        where = (where + " AND " + term) if where else ("WHERE " + term)
     sql = text(
         f"""
         SELECT
@@ -73,11 +98,13 @@ def by_team(db: Session, filters: AnalyticsFilters) -> list[dict[str, Any]]:
             SUM(f.story_points)                                      AS total_story_points,
             AVG(f.story_points)                                      AS avg_story_points,
             AVG(f.estimate_hours)                                    AS avg_estimate_hours,
-            AVG(f.spent_hours)                                       AS avg_spent_hours,
-            COUNT(*) FILTER (WHERE f.skill_usage_detected IS TRUE)   AS skill_count,
-            COUNT(*) FILTER (WHERE f.no_description)                 AS no_description_count,
-            COUNT(*) FILTER (WHERE f.over_budget)                    AS over_budget_count,
-            COUNT(*) FILTER (WHERE f.ai_plan_detected IS TRUE)       AS ai_plan_count
+            AVG(f.spent_hours)                                                             AS avg_spent_hours,
+            COUNT(*) FILTER (WHERE f.skill_usage_detected IS TRUE)                         AS skill_count,
+            COUNT(DISTINCT f.assignee_id) FILTER (WHERE f.skill_usage_detected IS TRUE)    AS skill_adopters,
+            COUNT(DISTINCT f.assignee_id)                                                  AS active_devs,
+            COUNT(*) FILTER (WHERE f.no_description)                                       AS no_description_count,
+            COUNT(*) FILTER (WHERE f.over_budget)                                          AS over_budget_count,
+            COUNT(*) FILTER (WHERE f.ai_plan_detected IS TRUE)                             AS ai_plan_count
         FROM v_issue_facts f
         {where}
         GROUP BY f.team_id, f.team_name, f.jira_team_id
@@ -226,6 +253,7 @@ def story_trends(
     project: str | None = None,
     team_id: int | None = None,
     team_ids: list[int] | None = None,
+    has_sprint: bool | None = None,
 ) -> list[dict[str, Any]]:
     extra_clauses = []
     params: dict[str, Any] = {"last": last}
@@ -233,6 +261,10 @@ def story_trends(
         extra_clauses.append("AND f.project = :project")
         params["project"] = project
     _apply_team_filter(extra_clauses, params, team_id, team_ids)
+    if has_sprint is True:
+        extra_clauses.append("AND f.issue_id IN (SELECT issue_id FROM issue_sprints)")
+    elif has_sprint is False:
+        extra_clauses.append("AND f.issue_id NOT IN (SELECT issue_id FROM issue_sprints)")
     extra = "\n            ".join(extra_clauses)
 
     sql = text(
@@ -260,6 +292,17 @@ def story_trends(
               AND f.is_done IS TRUE
               AND f.resolved_at >= (SELECT week_from FROM bounds)
               {extra}
+        ),
+        done_any_weekly AS (
+            SELECT
+                date_trunc('week', f.resolved_at)::date  AS week_start,
+                COUNT(DISTINCT f.assignee_id)            AS active_delivered_devs
+            FROM v_issue_facts f
+            WHERE f.is_done IS TRUE
+              AND f.resolved_at >= (SELECT week_from FROM bounds)
+              AND f.assignee_id IS NOT NULL
+              {extra}
+            GROUP BY 1
         )
         SELECT
             w.week_start,
@@ -278,10 +321,14 @@ def story_trends(
             COUNT(d.assignee_id)                                                            AS story_count,
             COUNT(*) FILTER (WHERE d.is_scored)                                             AS scored_count,
             COUNT(DISTINCT d.assignee_id)                                                   AS active_resources,
-            COUNT(*) FILTER (WHERE d.spent_hours > 0 AND d.story_points > 0)               AS hour_logged_count
+            COUNT(*) FILTER (WHERE d.spent_hours > 0 AND d.story_points > 0)               AS hour_logged_count,
+            COUNT(*) FILTER (WHERE d.skill_usage_detected IS TRUE)                          AS skill_count,
+            COUNT(DISTINCT d.assignee_id) FILTER (WHERE d.skill_usage_detected IS TRUE)     AS skill_adopters,
+            COALESCE(a.active_delivered_devs, 0)                                            AS active_delivered_devs
         FROM weeks w
         LEFT JOIN done_stories d USING (week_start)
-        GROUP BY w.week_start
+        LEFT JOIN done_any_weekly a USING (week_start)
+        GROUP BY w.week_start, a.active_delivered_devs
         ORDER BY w.week_start ASC
         """
     )

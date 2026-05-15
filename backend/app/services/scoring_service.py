@@ -446,6 +446,92 @@ def _mark_no_description(*, score_row: IssueAIScore, description: str | None) ->
 # ---------- public entry point ----------
 
 
+RESCORE_MODEL = "claude-sonnet-4-6"
+
+
+def score_single(db: Session, issue: Issue, *, timeout: int | None = None) -> IssueAIScore:
+    """Synchronously score a single issue. Bypasses batch eligibility filters
+    and the scoring_lock. Always uses RESCORE_MODEL so batch defaults are untouched.
+    Creates the IssueAIScore row if missing. Returns the updated row. Raises on
+    failure — caller maps exceptions to HTTP errors."""
+    # Atomically flip any non-in_progress status to in_progress (per-issue lock).
+    updated_id = db.execute(
+        text(
+            """
+            UPDATE issue_ai_scores
+               SET scoring_status = 'in_progress'
+             WHERE issue_id = :issue_id
+               AND scoring_status != 'in_progress'
+            RETURNING id
+            """
+        ),
+        {"issue_id": issue.id},
+    ).scalar_one_or_none()
+    db.commit()
+
+    if updated_id is None:
+        existing = db.query(IssueAIScore).filter(IssueAIScore.issue_id == issue.id).one_or_none()
+        if existing is not None:
+            raise RuntimeError(f"Issue {issue.jira_key} is already being scored")
+        score_row = IssueAIScore(issue_id=issue.id, scoring_status="in_progress")
+        db.add(score_row)
+        db.commit()
+        db.refresh(score_row)
+    else:
+        score_row = db.get(IssueAIScore, updated_id)
+
+    try:
+        if not _has_description(issue.description):
+            _mark_no_description(score_row=score_row, description=issue.description)
+            db.commit()
+            return score_row
+
+        agent_body, allowed_tools, _ = _load_agent()
+        timeout_secs = timeout or _DEFAULT_TIMEOUT
+        user_prompt = _build_user_prompt(issue)
+        cli_result = _invoke_claude(
+            agent_body=agent_body,
+            allowed_tools=allowed_tools,
+            user_prompt=user_prompt,
+            model=RESCORE_MODEL,
+            timeout=timeout_secs,
+        )
+        parsed = _parse_score_json(cli_result.text)
+        _write_score(
+            score_row=score_row,
+            parsed=parsed,
+            description=issue.description,
+            model=RESCORE_MODEL,
+            cli_result=cli_result,
+            raw_text=cli_result.text,
+        )
+        db.commit()
+        return score_row
+    except ScoringRateLimitedError as exc:
+        db.rollback()
+        score_row = db.get(IssueAIScore, score_row.id)
+        score_row.scoring_status = "failed"
+        score_row.error_message = f"{type(exc).__name__}: {exc}"[:4000]
+        db.commit()
+        raise
+    except Exception as exc:
+        logger.exception("single rescore failed jira_key=%s", issue.jira_key)
+        db.rollback()
+        score_row = db.get(IssueAIScore, score_row.id)
+        score_row.scoring_status = "failed"
+        score_row.error_message = f"{type(exc).__name__}: {exc}"[:4000]
+        db.commit()
+        record_failure(
+            db,
+            phase="score",
+            entity="issue",
+            title=f"Rescore failed: {issue.jira_key}",
+            exc=exc,
+            jira_ref=issue.jira_key,
+        )
+        raise
+
+
 def score_pending(
     db: Session,
     *,

@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Plug,
@@ -8,15 +9,15 @@ import {
   Settings,
   Search,
   LayoutDashboard,
+  Bot,
+  Users,
+  Star,
+  ChevronDown,
 } from "lucide-react";
 import { LumberLogo } from "../ui/Logos";
 import { Avatar } from "../ui/Avatar";
 import { cn } from "../../lib/cn";
 import { getStagingIssues } from "../../lib/api";
-
-const analyticsNav = [
-  { to: "/analytics", label: "Analytics", icon: LayoutDashboard },
-];
 
 function SectionLabel({ children }) {
   return (
@@ -48,6 +49,59 @@ function NavItem({ to, label, icon: Icon, end, badge }) {
         </span>
       )}
     </NavLink>
+  );
+}
+
+function SubNavItem({ to, label, icon: Icon, end }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        cn(
+          "flex items-center gap-2 rounded py-1.5 pl-8 pr-2.5 text-[12.5px] font-medium",
+          isActive
+            ? "text-accent"
+            : "text-ink-3 hover:bg-bg-sunken hover:text-ink-2",
+        )
+      }
+    >
+      <Icon size={13} />
+      <span>{label}</span>
+    </NavLink>
+  );
+}
+
+function AnalyticsGroup() {
+  const { pathname } = useLocation();
+  const isUnderAnalytics = pathname.startsWith("/analytics");
+  const [open, setOpen] = useState(isUnderAnalytics);
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex w-full items-center gap-2.5 rounded px-2.5 py-2 text-[13px] font-medium",
+          isUnderAnalytics ? "text-ink" : "text-ink-2 hover:bg-bg-sunken",
+        )}
+      >
+        <LayoutDashboard size={15} />
+        <span className="flex-1 text-left">Analytics</span>
+        <ChevronDown
+          size={13}
+          className={cn("text-ink-3 transition-transform", open && "rotate-180")}
+        />
+      </button>
+
+      {open && (
+        <div className="mt-0.5">
+          <SubNavItem to="/analytics/ai-adoption" label="AI Adoption" icon={Bot} />
+          <SubNavItem to="/analytics/resource" label="Resource" icon={Users} />
+          <SubNavItem to="/analytics/quality" label="Quality" icon={Star} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -87,9 +141,7 @@ export function Sidebar() {
       {/* nav */}
       <nav className="flex-1 px-3 py-1">
         <SectionLabel>Workspace</SectionLabel>
-        {analyticsNav.map((item) => (
-          <NavItem key={item.to} {...item} />
-        ))}
+        <AnalyticsGroup />
 
         <div className="my-3 border-t border-border" />
 
