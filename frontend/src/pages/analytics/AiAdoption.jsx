@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
@@ -6,10 +5,7 @@ import { getAnalyticsByTeam, getAnalyticsStoryTrends, getIssues, getTeams } from
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
-import { Table, TBody, TD, TH, THead, TR } from "../../components/ui/Table";
-import { Pill } from "../../components/ui/Pill";
-import { ScoreBar } from "../../components/charts/ScoreBar";
-import { IssueDrawer } from "../../components/ui/IssueDrawer";
+import { StoriesTable } from "../../components/ui/StoriesTable";
 
 function pct(v) {
   if (v == null) return "—";
@@ -164,8 +160,6 @@ export function AiAdoption() {
     enabled: teamIdsReady && !!lastWeek,
   });
 
-  const [selectedKey, setSelectedKey] = useState(null);
-
   const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
   const prevStoryRate = prevWeek ? safeRate(prevWeek.skill_count, prevWeek.story_count) : null;
 
@@ -319,75 +313,16 @@ export function AiAdoption() {
               </span>
             </CardHeader>
             <CardBody pad="none">
-              {!weekIssues ? (
-                <div className="flex items-center gap-2 px-4 py-4 text-[13px] text-ink-3">
-                  <Loader2 size={13} className="animate-spin" /> Loading…
-                </div>
-              ) : weekIssues.items.length === 0 ? (
-                <div className="px-4 py-8 text-center text-[13px] text-ink-4">No stories found.</div>
-              ) : (
-                <Table>
-                  <THead>
-                    <TR>
-                      <TH>Key</TH>
-                      <TH>Summary</TH>
-                      <TH>Team</TH>
-                      <TH>Assignee</TH>
-                      <TH className="text-right">SP</TH>
-                      <TH>Score</TH>
-                      <TH>Skill</TH>
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {weekIssues.items.map((it) => (
-                      <TR key={it.issue_id}>
-                        <TD>
-                          <button
-                            className="font-mono text-[12px] font-semibold text-accent hover:underline"
-                            onClick={() => setSelectedKey(it.jira_key)}
-                          >
-                            {it.jira_key}
-                          </button>
-                        </TD>
-                        <TD className="max-w-[340px]">
-                          <span className="line-clamp-1 text-[13px] text-ink-2">{it.summary}</span>
-                        </TD>
-                        <TD>
-                          <span className="text-[12.5px] text-ink-3">{it.team_name || "—"}</span>
-                        </TD>
-                        <TD>
-                          <span className="text-[12.5px] text-ink-2">{it.assignee_name || <span className="text-ink-4">—</span>}</span>
-                        </TD>
-                        <TD className="text-right font-mono text-[12px]">
-                          {it.story_points ?? "—"}
-                        </TD>
-                        <TD>
-                          {it.quality_score != null ? (
-                            <ScoreBar value={it.quality_score} width={48} showValue />
-                          ) : (
-                            <span className="text-[12px] text-ink-4">—</span>
-                          )}
-                        </TD>
-                        <TD>
-                          {it.skill_usage_detected ? (
-                            <Pill tone="ok">{it.skill_name || "yes"}</Pill>
-                          ) : it.quality_score != null ? (
-                            <span className="text-[12px] text-ink-4">—</span>
-                          ) : (
-                            <span className="text-[12px] text-ink-4">NS</span>
-                          )}
-                        </TD>
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              )}
+              <StoriesTable
+                items={weekIssues?.items ?? []}
+                isLoading={!weekIssues}
+                showTeamFilter
+              />
             </CardBody>
           </Card>
         </>
       )}
 
-      <IssueDrawer issueKey={selectedKey} onClose={() => setSelectedKey(null)} />
     </div>
   );
 }

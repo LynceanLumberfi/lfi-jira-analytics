@@ -61,9 +61,10 @@ def by_team(
 @router.get("/by-assignee", response_model=list[AssigneeAggregateOut])
 def by_assignee(
     filters: AnalyticsFilters = Depends(get_filters),
+    team_ids: list[int] = Query(default=[]),
     db: Session = Depends(get_db),
 ) -> list[AssigneeAggregateOut]:
-    rows = analytics_service.by_assignee(db, filters)
+    rows = analytics_service.by_assignee(db, filters, team_ids=team_ids or None)
     return [AssigneeAggregateOut(**_coerce(r)) for r in rows]
 
 

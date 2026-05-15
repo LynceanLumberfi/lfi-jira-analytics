@@ -117,8 +117,18 @@ def by_team(
 # ---------- by assignee ----------
 
 
-def by_assignee(db: Session, filters: AnalyticsFilters) -> list[dict[str, Any]]:
+def by_assignee(
+    db: Session,
+    filters: AnalyticsFilters,
+    *,
+    team_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     where, params = _where_clauses(filters)
+    extra: list[str] = []
+    _apply_team_filter(extra, params, None, team_ids)
+    for clause in extra:
+        term = clause.lstrip("AND ").strip()
+        where = (where + " AND " + term) if where else ("WHERE " + term)
     sql = text(
         f"""
         SELECT
@@ -298,7 +308,8 @@ def story_trends(
                 date_trunc('week', f.resolved_at)::date  AS week_start,
                 COUNT(DISTINCT f.assignee_id)            AS active_delivered_devs
             FROM v_issue_facts f
-            WHERE f.is_done IS TRUE
+            WHERE f.issue_type = 'Story'
+              AND f.is_done IS TRUE
               AND f.resolved_at >= (SELECT week_from FROM bounds)
               AND f.assignee_id IS NOT NULL
               {extra}

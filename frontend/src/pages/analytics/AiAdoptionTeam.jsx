@@ -1,16 +1,12 @@
 import { useParams, Navigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import {
-  getAnalyticsIssueTypeTrends,
-  getAnalyticsStoryTrends,
-  getTeams,
-} from "../../lib/api";
+import { getAnalyticsByAssignee, getAnalyticsStoryTrends, getIssues, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Sparkline } from "../../components/charts/Sparkline";
-import { StoryTrendsChart } from "../../components/charts/StoryTrendsChart";
-import { IssueTypeTrendsChart } from "../../components/charts/IssueTypeTrendsChart";
+import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
+import { DevSkillAdoptionChart } from "../../components/charts/DevSkillAdoptionChart";
+import { StoriesTable } from "../../components/ui/StoriesTable";
 
 function pct(v) {
   if (v == null) return "—";
@@ -23,17 +19,20 @@ function weekLabel(weekStart) {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
-  if (curr == null || prev == null) return null;
-  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
-  if (!direction) return null;
-  const isGood = higherIsBetter ? direction === "up" : direction === "down";
-  return {
-    direction,
-    tone: isGood ? "ok" : "warn",
-    prevValue: fmtPrev ?? String(prev),
-    prevSub: prevSub ?? "",
-  };
+function nextMonday(weekStart) {
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + 7);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
+function currentIsoWeekMonday() {
+  const dt = new Date();
+  const day = dt.getDay() || 7;
+  dt.setDate(dt.getDate() - day + 1);
+  dt.setHours(0, 0, 0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function DeltaArrow({ direction, tone, prevValue, prevSub }) {
@@ -56,7 +55,7 @@ function DeltaArrow({ direction, tone, prevValue, prevSub }) {
   );
 }
 
-function KpiHero({ label, value, sub, spark, sparkTone = "accent", tone = "default", delta }) {
+function KpiHero({ label, value, sub, tone = "default", delta }) {
   const subTone =
     tone === "warn" ? "text-warn"
     : tone === "err" ? "text-err"
@@ -65,39 +64,44 @@ function KpiHero({ label, value, sub, spark, sparkTone = "accent", tone = "defau
   return (
     <Card>
       <CardBody>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-              {label}
-            </p>
-            <div className="mt-2 flex items-center gap-1.5">
-              <p className="text-[26px] font-semibold leading-tight text-ink">{value}</p>
-              {delta && (
-                <DeltaArrow
-                  direction={delta.direction}
-                  tone={delta.tone}
-                  prevValue={delta.prevValue}
-                  prevSub={delta.prevSub}
-                />
-              )}
-            </div>
-            {sub && <p className={`mt-1 text-[12.5px] ${subTone}`}>{sub}</p>}
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
+            {label}
+          </p>
+          <div className="mt-2 flex items-center gap-1.5">
+            <p className="text-[26px] font-semibold leading-tight text-ink">{value}</p>
+            {delta && (
+              <DeltaArrow
+                direction={delta.direction}
+                tone={delta.tone}
+                prevValue={delta.prevValue}
+                prevSub={delta.prevSub}
+              />
+            )}
           </div>
-          {spark?.length > 0 && (
-            <Sparkline data={spark} tone={sparkTone} width={110} height={36} />
-          )}
+          {sub && <p className={`mt-1 text-[12.5px] ${subTone}`}>{sub}</p>}
         </div>
       </CardBody>
     </Card>
   );
 }
 
-function LoadingRow() {
-  return (
-    <div className="flex items-center gap-2 text-[13px] text-ink-3">
-      <Loader2 size={14} className="animate-spin" /> Loading…
-    </div>
-  );
+function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
+  if (curr == null || prev == null) return null;
+  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
+  if (!direction) return null;
+  const isGood = higherIsBetter ? direction === "up" : direction === "down";
+  return {
+    direction,
+    tone: isGood ? "ok" : "warn",
+    prevValue: fmtPrev ?? String(prev),
+    prevSub: prevSub ?? "",
+  };
+}
+
+function safeRate(num, den) {
+  if (!den || den <= 0) return null;
+  return num / den;
 }
 
 export function AiAdoptionTeam() {
@@ -119,67 +123,81 @@ export function AiAdoptionTeam() {
 
   const teamIds = [numTeamId];
 
-  const { data: issueTypes, isLoading: itLoading } = useQuery({
-    queryKey: ["analytics", "issue-type-trends", 12, teamIds],
-    queryFn: () => getAnalyticsIssueTypeTrends({ last: 12, team_ids: teamIds }),
+  const { data: trends, isLoading } = useQuery({
+    queryKey: ["analytics", "story-trends", 12, teamIds, "has_sprint"],
+    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds, has_sprint: true }),
     enabled: isKnown,
   });
 
-  const { data: trends, isLoading: tLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, teamIds],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds }),
-    enabled: isKnown,
+  const currentWeek = currentIsoWeekMonday();
+  const completedWeeks = trends
+    ? [...trends].reverse().filter((w) => w.story_count > 0 && w.week_start < currentWeek)
+    : [];
+  const lastWeek = completedWeeks[0] ?? null;
+  const prevWeek = completedWeeks[1] ?? null;
+
+  const weekResolved = lastWeek ? nextMonday(lastWeek.week_start) : null;
+
+  const { data: weekIssues } = useQuery({
+    queryKey: ["issues", "week-stories", teamIds, lastWeek?.week_start, "has_sprint"],
+    queryFn: () =>
+      getIssues({
+        issue_type: "Story",
+        is_done: true,
+        has_sprint: true,
+        team_ids: teamIds,
+        resolved_since: lastWeek.week_start,
+        resolved_until: weekResolved,
+        sort: "jira_key",
+        order: "asc",
+        limit: 200,
+      }),
+    enabled: isKnown && !!lastWeek,
   });
 
-  const activeWeeks = trends ? [...trends].reverse().filter((w) => w.story_count > 0) : [];
-  const lastActiveWeek = activeWeeks[0] ?? null;
-  const prevActiveWeek = activeWeeks[1] ?? null;
+  const { data: devRows } = useQuery({
+    queryKey: ["analytics", "by-assignee", teamIds, lastWeek?.week_start, "has_sprint"],
+    queryFn: () =>
+      getAnalyticsByAssignee({
+        issue_type: "Story",
+        team_ids: teamIds,
+        resolved_since: lastWeek.week_start,
+        resolved_until: weekResolved,
+        has_sprint: true,
+      }),
+    enabled: isKnown && !!lastWeek,
+  });
 
-  const spSpark    = (trends || []).map((w) => w.story_points ?? 0);
-  const skillSpark = (trends || []).map((w) => w.skill_adoption_rate != null ? w.skill_adoption_rate * 100 : 0);
-  const pprSpark   = (trends || []).map((w) => w.points_per_active_resource ?? 0);
-  const hppSpark   = (trends || []).map((w) => w.hours_per_point ?? 0);
+  const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
+  const prevStoryRate = prevWeek ? safeRate(prevWeek.skill_count, prevWeek.story_count) : null;
 
-  const noData = !tLoading && !lastActiveWeek;
+  const devRate = lastWeek
+    ? safeRate(lastWeek.skill_adopters, lastWeek.active_delivered_devs)
+    : null;
+  const prevDevRate = prevWeek
+    ? safeRate(prevWeek.skill_adopters, prevWeek.active_delivered_devs)
+    : null;
 
-  const prevSub = prevActiveWeek
-    ? `wk of ${weekLabel(prevActiveWeek.week_start)} · ${prevActiveWeek.story_count} stories`
+  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
+
+  const prevSub = prevWeek
+    ? `wk of ${weekLabel(prevWeek.week_start)}`
     : undefined;
 
-  const spDelta = computeDelta({
-    curr: lastActiveWeek?.story_points,
-    prev: prevActiveWeek?.story_points,
+  const storyDelta = computeDelta({
+    curr: storyRate,
+    prev: prevStoryRate,
     higherIsBetter: true,
-    fmtPrev: prevActiveWeek ? `${Math.round(prevActiveWeek.story_points)} pts` : undefined,
-    prevSub,
+    fmtPrev: prevStoryRate != null ? pct(prevStoryRate) : undefined,
+    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_count}/${prevWeek.story_count} stories` : prevSub,
   });
 
-  const skillDelta = computeDelta({
-    curr: lastActiveWeek?.skill_adoption_rate,
-    prev: prevActiveWeek?.skill_adoption_rate,
+  const devDelta = computeDelta({
+    curr: devRate,
+    prev: prevDevRate,
     higherIsBetter: true,
-    fmtPrev: prevActiveWeek?.skill_adoption_rate != null ? pct(prevActiveWeek.skill_adoption_rate) : undefined,
-    prevSub,
-  });
-
-  const pprDelta = computeDelta({
-    curr: lastActiveWeek?.points_per_active_resource,
-    prev: prevActiveWeek?.points_per_active_resource,
-    higherIsBetter: true,
-    fmtPrev: prevActiveWeek?.points_per_active_resource != null
-      ? `${prevActiveWeek.points_per_active_resource.toFixed(1)} pts`
-      : undefined,
-    prevSub,
-  });
-
-  const hppDelta = computeDelta({
-    curr: lastActiveWeek?.hours_per_point,
-    prev: prevActiveWeek?.hours_per_point,
-    higherIsBetter: false,
-    fmtPrev: prevActiveWeek?.hours_per_point != null
-      ? `${prevActiveWeek.hours_per_point.toFixed(1)} h`
-      : undefined,
-    prevSub,
+    fmtPrev: prevDevRate != null ? pct(prevDevRate) : undefined,
+    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_adopters}/${prevWeek.active_delivered_devs} devs` : prevSub,
   });
 
   const teamName = team?.name ?? `Team #${teamId}`;
@@ -189,93 +207,88 @@ export function AiAdoptionTeam() {
       <header>
         <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
         <p className="mt-1 text-[13px] text-ink-3">
-          Productivity, quality, and AI adoption signals for this team.
-          {lastActiveWeek && (
-            <> Last active week of{" "}
-              <span className="font-medium text-ink-2">{weekLabel(lastActiveWeek.week_start)}</span>.
-            </>
+          Skill adoption across delivered Stories and the engineers shipping them.
+          {lastWeek && (
+            <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
           )}
         </p>
       </header>
 
-      <section className="grid grid-cols-4 gap-4">
-        <KpiHero
-          label="Story Points"
-          value={lastActiveWeek ? `${Math.round(lastActiveWeek.story_points)} pts` : "—"}
-          sub={
-            noData ? "no completed stories yet" :
-            lastActiveWeek ? `${lastActiveWeek.story_count} stories · wk of ${weekLabel(lastActiveWeek.week_start)}` : ""
-          }
-          spark={spSpark}
-          sparkTone="accent"
-          delta={spDelta}
-        />
-        <KpiHero
-          label="Skill Adoption"
-          value={lastActiveWeek?.skill_adoption_rate != null ? pct(lastActiveWeek.skill_adoption_rate) : "—"}
-          sub={
-            lastActiveWeek?.scored_count
-              ? `${lastActiveWeek.scored_count} stories scored`
-              : noData ? "no scored stories yet" : ""
-          }
-          spark={skillSpark}
-          sparkTone="ok"
-          tone={
-            lastActiveWeek?.skill_adoption_rate != null && lastActiveWeek.skill_adoption_rate >= 0.5
-              ? "ok"
-              : "default"
-          }
-          delta={skillDelta}
-        />
-        <KpiHero
-          label="Pts / Resource"
-          value={lastActiveWeek?.points_per_active_resource != null ? `${lastActiveWeek.points_per_active_resource.toFixed(1)} pts` : "—"}
-          sub={
-            lastActiveWeek?.active_resources
-              ? `${lastActiveWeek.active_resources} active dev${lastActiveWeek.active_resources !== 1 ? "s" : ""}`
-              : noData ? "no data yet" : ""
-          }
-          spark={pprSpark}
-          sparkTone="info"
-          delta={pprDelta}
-        />
-        <KpiHero
-          label="Hours / Story Point"
-          value={lastActiveWeek?.hours_per_point != null ? `${lastActiveWeek.hours_per_point.toFixed(1)} h` : "—"}
-          sub={
-            lastActiveWeek?.hour_logged_count
-              ? `${lastActiveWeek.hour_logged_count} stories w/ time logged`
-              : noData ? "no time tracking data" : ""
-          }
-          spark={hppSpark}
-          sparkTone="warn"
-          delta={hppDelta}
-        />
-      </section>
+      {isLoading ? (
+        <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
+          <Loader2 size={14} className="animate-spin" /> Loading…
+        </div>
+      ) : !lastWeek ? (
+        <div className="rounded-lg border border-dashed border-border bg-bg-sunken py-16 text-center text-[13px] text-ink-3">
+          No completed Stories in the last 12 weeks.
+        </div>
+      ) : (
+        <>
+          <section className="grid grid-cols-2 gap-4">
+            <KpiHero
+              label="Stories delivered with Skill"
+              value={pct(storyRate)}
+              sub={
+                lastWeek.story_count > 0
+                  ? `${lastWeek.skill_count} of ${lastWeek.story_count} stories`
+                  : "no stories delivered"
+              }
+              tone={storyRate != null && storyRate >= 0.5 ? "ok" : "default"}
+              delta={storyDelta}
+            />
+            <KpiHero
+              label="Developers using Skill"
+              value={pct(devRate)}
+              sub={
+                lastWeek.active_delivered_devs > 0
+                  ? `${lastWeek.skill_adopters} of ${lastWeek.active_delivered_devs} active devs`
+                  : "no active devs"
+              }
+              tone={devRate != null && devRate >= 0.5 ? "ok" : "default"}
+              delta={devDelta}
+            />
+          </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Story trends — last 12 weeks</CardTitle>
-          <span className="text-[12.5px] text-ink-3">
-            Throughput, efficiency, and AI-skill coverage for completed Stories
-          </span>
-        </CardHeader>
-        <CardBody pad="lg">
-          {tLoading ? <LoadingRow /> : <StoryTrendsChart data={trends || []} />}
-        </CardBody>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Skill adoption — last 12 weeks</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                Completed weeks only · in-progress week excluded
+              </span>
+            </CardHeader>
+            <CardBody pad="lg">
+              <SkillAdoptionTrendsChart data={completedTrends} />
+            </CardBody>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Completed by type — last 12 weeks</CardTitle>
-          <span className="text-[12.5px] text-ink-3">
-            Stories · Bugs · Tasks shipped per week
-          </span>
-        </CardHeader>
-        <CardBody pad="lg">
-          {itLoading ? <LoadingRow /> : <IssueTypeTrendsChart data={issueTypes || []} />}
-        </CardBody>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Developer skill adoption — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                Stories with Skill per developer · sprint stories only
+              </span>
+            </CardHeader>
+            <CardBody pad="lg">
+              <DevSkillAdoptionChart data={devRows || []} />
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Stories delivered — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                {weekIssues ? `${weekIssues.total} stories` : ""}
+              </span>
+            </CardHeader>
+            <CardBody pad="none">
+              <StoriesTable
+                items={weekIssues?.items ?? []}
+                isLoading={!weekIssues}
+              />
+            </CardBody>
+          </Card>
+        </>
+      )}
     </div>
   );
 }

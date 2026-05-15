@@ -4,22 +4,24 @@ import { useEffect, useState } from "react";
 import { cn } from "../../lib/cn";
 
 const CRUMBS = {
-  "/integrations": ["Settings", "Integrations"],
-  "/integrations/connect": ["Settings", "Integrations", "Connect Jira"],
-  "/integrations/history": ["Settings", "Integrations", "Sync history"],
-  "/integrations/failed": ["Settings", "Integrations", "Failed records"],
-  "/analytics": ["Workspace", "Analytics", "Overview"],
+  "/integrations": ["Admin", "Integrations"],
+  "/integrations/connect": ["Admin", "Integrations", "Connect Jira"],
+  "/integrations/staging": ["Admin", "Integrations", "Sync Review"],
+  "/integrations/all-records": ["Admin", "Integrations", "All Records"],
+  "/integrations/history": ["Admin", "Integrations", "Sync History"],
+  "/integrations/failed": ["Admin", "Integrations", "Failed Records"],
+  "/analytics": ["Analytics", "Overview"],
+  "/analytics/ai-adoption": ["Analytics", "AI Adoption"],
+  "/analytics/resource": ["Analytics", "Resource"],
+  "/analytics/quality": ["Analytics", "Quality"],
 };
 
 function matchCrumbs(pathname) {
   if (CRUMBS[pathname]) return CRUMBS[pathname];
-  if (pathname.startsWith("/integrations/sync/")) {
-    return ["Settings", "Integrations", "Sync run"];
-  }
-  if (pathname.startsWith("/analytics/team/")) {
-    return ["Workspace", "Analytics", "Team"];
-  }
-  return ["Settings", "Integrations"];
+  if (pathname.startsWith("/integrations/sync/")) return ["Admin", "Integrations", "Sync Run"];
+  if (pathname.startsWith("/analytics/ai-adoption/team/")) return ["Analytics", "AI Adoption", "Team"];
+  if (pathname.startsWith("/analytics/team/")) return ["Analytics", "Overview", "Team"];
+  return ["Analytics", "Overview"];
 }
 
 export function Topbar() {
