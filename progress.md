@@ -1,5 +1,43 @@
 # Progress
 
+## Analytics: AI Adoption tab + Resource tab ✅ / 🚧 (2026-05-15)
+
+### AI Adoption tab — complete
+
+Full analytics view for skill adoption across sprint-associated Stories.
+
+| Component | What it does |
+|---|---|
+| `AiAdoption.jsx` | Overview: 4 KPI heroes (story skill %, dev skill %, top team × 2), 12-week trend chart, stories table |
+| `AiAdoptionTeam.jsx` | Team drill-down: 2 KPI heroes, trend chart, dev bar chart, stories table |
+| `StoriesTable.jsx` | Reusable filterable + sortable issues table with inline `IssueDrawer` |
+| `SkillAdoptionTrendsChart.jsx` | 12-week dual-line chart (stories % + devs %) |
+| `DevSkillAdoptionChart.jsx` | Horizontal bar chart per dev, sorted by rate |
+| `analytics_service.story_trends` | Added `has_sprint` filter; `done_any_weekly` CTE scoped to `issue_type='Story'` (fixes dev count inflation bug) |
+| `analytics_service.by_assignee` | Added `team_ids` filter |
+| `analytics_service.AnalyticsFilters` | Added `has_sprint: bool | None` field |
+| Backend API | `has_sprint` query param on story-trends; `team_ids` on by-assignee |
+| `api.js` | `getAnalyticsStoryTrends`, `getAnalyticsByTeam`, `getAnalyticsByAssignee` updated for new params |
+| `Topbar.jsx` | Breadcrumb CRUMBS map corrected for all analytics + admin routes |
+
+Key decisions:
+- All AI Adoption queries filter `has_sprint: true` — only sprint-associated stories count.
+- `done_any_weekly` bug fix: was counting devs across all issue types; scoped to Stories only.
+- `StoriesTable` is self-contained (filter bar + sort + IssueDrawer) — used on both Overview and Team pages.
+
+### Resource tab — complete
+
+Capacity and velocity view.
+
+| Component | What it does |
+|---|---|
+| `Resource.jsx` | 4 KPI heroes (story points, active devs, pts/dev, hours/point), 12-week trend chart, team breakdown table |
+| `ResourceTrendsChart.jsx` | Dual-axis chart: bars (story points, left y) + line (active devs, right y), tooltip shows pts/dev |
+
+Uses same `story_trends` endpoint as AI Adoption — `points_per_active_resource`, `active_resources`, `hours_per_point` fields already present in `StoryTrendOut`.
+
+---
+
 ## JiraClient migration to /search/jql + live credentials wired ✅ Complete (2026-05-11)
 
 ### What changed

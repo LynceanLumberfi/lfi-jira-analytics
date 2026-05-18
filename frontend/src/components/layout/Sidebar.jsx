@@ -13,6 +13,8 @@ import {
   Users,
   Star,
   ChevronDown,
+  FlaskConical,
+  Upload,
 } from "lucide-react";
 import { LumberLogo } from "../ui/Logos";
 import { Avatar } from "../ui/Avatar";
@@ -69,6 +71,38 @@ function SubNavItem({ to, label, icon: Icon, end }) {
       <Icon size={13} />
       <span>{label}</span>
     </NavLink>
+  );
+}
+
+function TestAutomationGroup() {
+  const { pathname } = useLocation();
+  const isUnder = pathname.startsWith("/workspace/test-automation");
+  const [open, setOpen] = useState(isUnder);
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex w-full items-center gap-2.5 rounded px-2.5 py-2 text-[13px] font-medium",
+          isUnder ? "text-ink" : "text-ink-2 hover:bg-bg-sunken",
+        )}
+      >
+        <FlaskConical size={15} />
+        <span className="flex-1 text-left">Test Automation</span>
+        <ChevronDown
+          size={13}
+          className={cn("text-ink-3 transition-transform", open && "rotate-180")}
+        />
+      </button>
+
+      {open && (
+        <div className="mt-0.5">
+          <SubNavItem to="/workspace/test-automation/coverage" label="Coverage" icon={Star} />
+          <SubNavItem to="/workspace/test-automation/execution" label="Execution" icon={Bot} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -142,6 +176,7 @@ export function Sidebar() {
       <nav className="flex-1 px-3 py-1">
         <SectionLabel>Workspace</SectionLabel>
         <AnalyticsGroup />
+        <TestAutomationGroup />
 
         <div className="my-3 border-t border-border" />
 
@@ -150,6 +185,7 @@ export function Sidebar() {
         <NavItem to="/integrations/staging" label="Sync Review" icon={ClipboardCheck} badge={pendingCount} />
         <NavItem to="/integrations/history" label="Sync history" icon={History} />
         <NavItem to="/integrations/failed" label="Failed records" icon={AlertTriangle} />
+        <NavItem to="/admin/test-coverage" label="Test Coverage" icon={Upload} />
 
         <div className="my-3 border-t border-border" />
         <SectionLabel>Coming soon</SectionLabel>

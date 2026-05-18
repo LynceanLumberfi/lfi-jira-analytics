@@ -16,8 +16,17 @@ import { TeamPage } from "./pages/analytics/TeamPage";
 import { AiAdoptionLayout } from "./pages/analytics/AiAdoptionLayout";
 import { AiAdoption } from "./pages/analytics/AiAdoption";
 import { AiAdoptionTeam } from "./pages/analytics/AiAdoptionTeam";
+import { ResourceLayout } from "./pages/analytics/ResourceLayout";
 import { Resource } from "./pages/analytics/Resource";
+import { ResourceTeam } from "./pages/analytics/ResourceTeam";
+import { QualityLayout } from "./pages/analytics/QualityLayout";
 import { Quality } from "./pages/analytics/Quality";
+import { QualityTeam } from "./pages/analytics/QualityTeam";
+import { WorkspaceLayout } from "./pages/workspace/WorkspaceLayout";
+import { TestAutomationLayout } from "./pages/workspace/TestAutomationLayout";
+import { CoverageOverview } from "./pages/workspace/CoverageOverview";
+import { ExecutionPlaceholder } from "./pages/workspace/ExecutionPlaceholder";
+import { TestCoverageUpload } from "./pages/admin/TestCoverageUpload";
 
 export const router = createBrowserRouter([
   {
@@ -56,10 +65,40 @@ export const router = createBrowserRouter([
               { path: "team/:teamId", element: <AiAdoptionTeam /> },
             ],
           },
-          { path: "resource", element: <Resource /> },
-          { path: "quality", element: <Quality /> },
+          {
+            path: "resource",
+            element: <ResourceLayout />,
+            children: [
+              { index: true, element: <Resource /> },
+              { path: "team/:teamId", element: <ResourceTeam /> },
+            ],
+          },
+          {
+            path: "quality",
+            element: <QualityLayout />,
+            children: [
+              { index: true, element: <Quality /> },
+              { path: "team/:teamId", element: <QualityTeam /> },
+            ],
+          },
         ],
       },
+      {
+        path: "/workspace",
+        element: <WorkspaceLayout />,
+        children: [
+          {
+            path: "test-automation",
+            element: <TestAutomationLayout />,
+            children: [
+              { index: true, element: <Navigate to="coverage" replace /> },
+              { path: "coverage", element: <CoverageOverview /> },
+              { path: "execution", element: <ExecutionPlaceholder /> },
+            ],
+          },
+        ],
+      },
+      { path: "/admin/test-coverage", element: <TestCoverageUpload /> },
       { path: "*", element: <Navigate to="/integrations" replace /> },
     ],
   },

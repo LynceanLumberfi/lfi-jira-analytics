@@ -86,9 +86,7 @@ function weekLabel(weekStart) {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// Returns a delta object for KpiHero, or null if either value is unavailable.
-// higherIsBetter = true means an increase is good (ok); false means a decrease is good.
-function computeDelta({ curr, prev, higherIsBetter = true, fmtCurr, fmtPrev, prevSub }) {
+function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
   if (curr == null || prev == null) return null;
   const direction = curr > prev ? "up" : curr < prev ? "down" : null;
   if (!direction) return null;

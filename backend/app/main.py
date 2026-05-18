@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.analytics import router as analytics_router
+from app.api.test_coverage import router as test_coverage_router
 from app.api.pipeline import router as pipeline_router
 from app.api.dimensions import router as dimensions_router
 from app.api.failed_records import router as failed_records_router
@@ -87,6 +88,7 @@ app.include_router(integrations_router)
 app.include_router(dimensions_router)
 app.include_router(analytics_router)
 app.include_router(issues_router)
+app.include_router(test_coverage_router)
 
 
 @app.get("/health")

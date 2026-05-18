@@ -1,6 +1,7 @@
+import { useParams, Navigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByTeam, getAnalyticsStoryTrends, getTeams } from "../../lib/api";
+import { getAnalyticsByAssignee, getAnalyticsStoryTrends, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { ResourceTrendsChart } from "../../components/charts/ResourceTrendsChart";
@@ -96,22 +97,29 @@ function safeRate(num, den) {
   return num / den;
 }
 
-export function Resource() {
+export function ResourceTeam() {
+  const { teamId } = useParams();
+  const numTeamId = Number(teamId);
+
   const { data: teams } = useQuery({
     queryKey: ["teams"],
     queryFn: getTeams,
     staleTime: 5 * 60 * 1000,
   });
 
-  const featuredIds = teams
-    ? teams.filter((t) => isFeaturedTeam(t.name)).map((t) => t.id)
-    : undefined;
-  const teamIdsReady = featuredIds !== undefined;
+  const team = teams?.find((t) => t.id === numTeamId);
+  const isKnown = teams !== undefined;
+
+  if (isKnown && (!team || !isFeaturedTeam(team.name))) {
+    return <Navigate to="/analytics/resource" replace />;
+  }
+
+  const teamIds = [numTeamId];
 
   const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, featuredIds, "has_sprint"],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: featuredIds, has_sprint: true }),
-    enabled: teamIdsReady,
+    queryKey: ["analytics", "story-trends", 12, teamIds, "has_sprint"],
+    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds, has_sprint: true }),
+    enabled: isKnown,
   });
 
   const currentWeek = currentIsoWeekMonday();
@@ -121,21 +129,20 @@ export function Resource() {
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
   const weekResolved = lastWeek ? nextMonday(lastWeek.week_start) : null;
+  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
-  const { data: teamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Story", featuredIds, lastWeek?.week_start, "has_sprint"],
+  const { data: devRows } = useQuery({
+    queryKey: ["analytics", "by-assignee", teamIds, lastWeek?.week_start, "has_sprint"],
     queryFn: () =>
-      getAnalyticsByTeam({
+      getAnalyticsByAssignee({
         issue_type: "Story",
-        team_ids: featuredIds,
+        team_ids: teamIds,
         resolved_since: lastWeek.week_start,
         resolved_until: weekResolved,
         has_sprint: true,
       }),
-    enabled: teamIdsReady && !!lastWeek,
+    enabled: isKnown && !!lastWeek,
   });
-
-  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
   const storyPoints = lastWeek?.story_points ?? null;
   const prevStoryPoints = prevWeek?.story_points ?? null;
@@ -182,14 +189,14 @@ export function Resource() {
       : prevSub,
   });
 
-  const activeTeamRows = (teamRows || []).filter((r) => r.issue_count > 0);
+  const teamName = team?.name ?? `Team #${teamId}`;
 
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h2 className="text-[18px] font-semibold text-ink">Resource</h2>
+        <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
         <p className="mt-1 text-[13px] text-ink-3">
-          Capacity, velocity, and points-per-resource breakdown across teams.
+          Capacity, velocity, and points-per-resource breakdown.
           {lastWeek && (
             <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
           )}
@@ -253,33 +260,40 @@ export function Resource() {
             </CardBody>
           </Card>
 
-          {activeTeamRows.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Team breakdown — week of {weekLabel(lastWeek.week_start)}</CardTitle>
-                <span className="text-[12.5px] text-ink-3">Sprint stories only</span>
-              </CardHeader>
-              <CardBody pad="none">
+          <Card>
+            <CardHeader>
+              <CardTitle>Resources — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                {devRows ? `${devRows.length} developers` : ""}
+              </span>
+            </CardHeader>
+            <CardBody pad="none">
+              {!devRows ? (
+                <div className="flex items-center gap-2 px-4 py-4 text-[13px] text-ink-3">
+                  <Loader2 size={13} className="animate-spin" /> Loading…
+                </div>
+              ) : devRows.length === 0 ? (
+                <div className="px-4 py-8 text-center text-[13px] text-ink-4">
+                  No developers found for this week.
+                </div>
+              ) : (
                 <table className="w-full border-collapse text-sm">
                   <thead className="bg-bg-sunken text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
                     <tr>
-                      <th className="px-4 py-2 text-left">Team</th>
+                      <th className="px-4 py-2 text-left">Developer</th>
                       <th className="px-4 py-2 text-right">Stories</th>
                       <th className="px-4 py-2 text-right">Points</th>
-                      <th className="px-4 py-2 text-right">Active Devs</th>
-                      <th className="px-4 py-2 text-right">Pts / Dev</th>
+                      <th className="px-4 py-2 text-right">Pts / Story</th>
+                      <th className="px-4 py-2 text-right">Hrs / Story</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {activeTeamRows.map((r) => {
-                      const ppr = safeRate(r.total_story_points, r.active_devs);
-                      return (
-                        <tr
-                          key={r.team_id}
-                          className="border-t border-border hover:bg-bg-sunken/50"
-                        >
+                    {[...devRows]
+                      .sort((a, b) => (b.total_story_points ?? 0) - (a.total_story_points ?? 0))
+                      .map((r) => (
+                        <tr key={r.assignee_id} className="border-t border-border hover:bg-bg-sunken/50">
                           <td className="px-4 py-3 text-[13px] font-medium text-ink">
-                            {r.team_name ?? "—"}
+                            {r.assignee_name || <span className="text-ink-4">Unassigned</span>}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
                             {r.issue_count}
@@ -288,19 +302,21 @@ export function Resource() {
                             {fmt(r.total_story_points)}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
-                            {r.active_devs}
+                            {fmt(r.avg_story_points, 1)}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
-                            {ppr != null ? fmt(ppr, 1) : "—"}
+                            {r.avg_spent_hours != null && r.avg_spent_hours > 0
+                              ? `${r.avg_spent_hours.toFixed(1)}h`
+                              : <span className="text-ink-4">—</span>}
                           </td>
                         </tr>
-                      );
-                    })}
+                      ))}
                   </tbody>
                 </table>
-              </CardBody>
-            </Card>
-          )}
+              )}
+            </CardBody>
+          </Card>
+
         </>
       )}
     </div>

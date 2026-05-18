@@ -20,6 +20,8 @@ function matchCrumbs(pathname) {
   if (CRUMBS[pathname]) return CRUMBS[pathname];
   if (pathname.startsWith("/integrations/sync/")) return ["Admin", "Integrations", "Sync Run"];
   if (pathname.startsWith("/analytics/ai-adoption/team/")) return ["Analytics", "AI Adoption", "Team"];
+  if (pathname.startsWith("/analytics/resource/team/")) return ["Analytics", "Resource", "Team"];
+  if (pathname.startsWith("/analytics/quality/team/")) return ["Analytics", "Quality", "Team"];
   if (pathname.startsWith("/analytics/team/")) return ["Analytics", "Overview", "Team"];
   return ["Analytics", "Overview"];
 }

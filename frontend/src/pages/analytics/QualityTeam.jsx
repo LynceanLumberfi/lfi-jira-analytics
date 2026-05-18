@@ -1,7 +1,7 @@
-import { useMemo } from "react";
+import { useParams, Navigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByTeam, getAnalyticsIssueTypeTrends, getTeams } from "../../lib/api";
+import { getAnalyticsIssueTypeTrends, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { QualityTrendsChart } from "../../components/charts/QualityTrendsChart";
@@ -15,13 +15,6 @@ function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function nextMonday(weekStart) {
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 7);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function currentIsoWeekMonday() {
@@ -102,22 +95,29 @@ function safeRate(num, den) {
   return num / den;
 }
 
-export function Quality() {
+export function QualityTeam() {
+  const { teamId } = useParams();
+  const numTeamId = Number(teamId);
+
   const { data: teams } = useQuery({
     queryKey: ["teams"],
     queryFn: getTeams,
     staleTime: 5 * 60 * 1000,
   });
 
-  const featuredIds = teams
-    ? teams.filter((t) => isFeaturedTeam(t.name)).map((t) => t.id)
-    : undefined;
-  const teamIdsReady = featuredIds !== undefined;
+  const team = teams?.find((t) => t.id === numTeamId);
+  const isKnown = teams !== undefined;
+
+  if (isKnown && (!team || !isFeaturedTeam(team.name))) {
+    return <Navigate to="/analytics/quality" replace />;
+  }
+
+  const teamIds = [numTeamId];
 
   const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "issue-type-trends", 12, featuredIds],
-    queryFn: () => getAnalyticsIssueTypeTrends({ last: 12, team_ids: featuredIds }),
-    enabled: teamIdsReady,
+    queryKey: ["analytics", "issue-type-trends", 12, teamIds],
+    queryFn: () => getAnalyticsIssueTypeTrends({ last: 12, team_ids: teamIds }),
+    enabled: isKnown,
   });
 
   const currentWeek = currentIsoWeekMonday();
@@ -126,52 +126,8 @@ export function Quality() {
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
-  const weekResolved = lastWeek ? nextMonday(lastWeek.week_start) : null;
   const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
-  // Three parallel queries for the team breakdown table
-  const teamQueryBase = {
-    team_ids: featuredIds,
-    resolved_since: lastWeek?.week_start,
-    resolved_until: weekResolved,
-  };
-  const { data: storyTeamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Story", featuredIds, lastWeek?.week_start],
-    queryFn: () => getAnalyticsByTeam({ issue_type: "Story", ...teamQueryBase }),
-    enabled: teamIdsReady && !!lastWeek,
-  });
-  const { data: bugTeamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Bug", featuredIds, lastWeek?.week_start],
-    queryFn: () => getAnalyticsByTeam({ issue_type: "Bug", ...teamQueryBase }),
-    enabled: teamIdsReady && !!lastWeek,
-  });
-  const { data: taskTeamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Task", featuredIds, lastWeek?.week_start],
-    queryFn: () => getAnalyticsByTeam({ issue_type: "Task", ...teamQueryBase }),
-    enabled: teamIdsReady && !!lastWeek,
-  });
-
-  const teamData = useMemo(() => {
-    if (!storyTeamRows || !bugTeamRows || !taskTeamRows) return null;
-    const map = {};
-    const merge = (rows, type) => {
-      for (const r of rows) {
-        if (!map[r.team_id]) {
-          map[r.team_id] = { team_id: r.team_id, team_name: r.team_name, stories: 0, bugs: 0, tasks: 0 };
-        }
-        map[r.team_id][type] = r.issue_count;
-      }
-    };
-    merge(storyTeamRows, "stories");
-    merge(bugTeamRows, "bugs");
-    merge(taskTeamRows, "tasks");
-    return Object.values(map)
-      .map((r) => ({ ...r, total: r.stories + r.bugs + r.tasks }))
-      .filter((r) => r.total > 0)
-      .sort((a, b) => b.stories - a.stories);
-  }, [storyTeamRows, bugTeamRows, taskTeamRows]);
-
-  // KPI computations
   const storyMix     = safeRate(lastWeek?.stories, lastWeek?.total);
   const prevStoryMix = safeRate(prevWeek?.stories, prevWeek?.total);
   const bugRate      = safeRate(lastWeek?.bugs,    lastWeek?.total);
@@ -202,10 +158,12 @@ export function Quality() {
     prevSub,
   });
 
+  const teamName = team?.name ?? `Team #${teamId}`;
+
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h2 className="text-[18px] font-semibold text-ink">Quality</h2>
+        <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
         <p className="mt-1 text-[13px] text-ink-3">
           Stories vs Bugs vs Tasks mix across all delivered work.
           {lastWeek && (
@@ -264,59 +222,6 @@ export function Quality() {
               <QualityTrendsChart data={completedTrends} />
             </CardBody>
           </Card>
-
-          {teamData && teamData.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Team breakdown — week of {weekLabel(lastWeek.week_start)}</CardTitle>
-              </CardHeader>
-              <CardBody pad="none">
-                <table className="w-full border-collapse text-sm">
-                  <thead className="bg-bg-sunken text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Team</th>
-                      <th className="px-4 py-2 text-right">Stories</th>
-                      <th className="px-4 py-2 text-right">Bugs</th>
-                      <th className="px-4 py-2 text-right">Tasks</th>
-                      <th className="px-4 py-2 text-right">Total</th>
-                      <th className="px-4 py-2 text-right">Story %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teamData.map((r) => {
-                      const mix = safeRate(r.stories, r.total);
-                      return (
-                        <tr key={r.team_id} className="border-t border-border hover:bg-bg-sunken/50">
-                          <td className="px-4 py-3 text-[13px] font-medium text-ink">
-                            {r.team_name ?? "—"}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
-                            {r.stories}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono text-[12px]">
-                            {r.bugs > 0
-                              ? <span className="font-medium text-err">{r.bugs}</span>
-                              : <span className="text-ink-4">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
-                            {r.tasks > 0 ? r.tasks : <span className="text-ink-4">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
-                            {r.total}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono text-[12px]">
-                            <span className={mix != null && mix >= 0.6 ? "font-semibold text-ok" : "text-ink-2"}>
-                              {pct(mix)}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </CardBody>
-            </Card>
-          )}
         </>
       )}
     </div>
