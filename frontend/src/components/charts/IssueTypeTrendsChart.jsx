@@ -12,6 +12,14 @@ function formatWeekLabel(weekStart) {
   });
 }
 
+function formatWeekRange(weekStart) {
+  const [year, month, day] = weekStart.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const end = new Date(year, month - 1, day + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 export function IssueTypeTrendsChart({ data = [], height = 220 }) {
   if (!data.length) {
     return (
@@ -66,7 +74,7 @@ export function IssueTypeTrendsChart({ data = [], height = 220 }) {
         const row = data[idx];
         if (!row) return "";
         const lines = [
-          `<div style="font-weight:600;margin-bottom:4px">Week of ${formatWeekLabel(row.week_start)}</div>`,
+          `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>`,
         ];
         for (const p of params) {
           lines.push(

@@ -14,7 +14,10 @@ function pct(v) {
 function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function nextMonday(weekStart) {
@@ -84,6 +87,53 @@ function KpiHero({ label, value, sub, tone = "default", delta }) {
   );
 }
 
+function BugsSplitCard({ customerRate, qaRate, customerBugs, qaBugs, customerDelta, qaDelta }) {
+  const customerTone =
+    customerRate == null ? "default" : customerRate >= 0.05 ? "warn" : "ok";
+  const qaTone = qaRate == null ? "default" : qaRate >= 0.2 ? "warn" : "default";
+  const valueClass = (tone) =>
+    tone === "warn" ? "text-warn" : tone === "ok" ? "text-ok" : "text-ink";
+  return (
+    <Card>
+      <CardBody>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">Bugs</p>
+        <div className="mt-2 flex gap-4">
+          <div className="flex-1">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.05em] text-ink-4">Customer</p>
+            <div className="mt-0.5 flex items-baseline gap-1.5">
+              <p className={`text-[20px] font-semibold leading-tight ${valueClass(customerTone)}`}>{pct(customerRate)}</p>
+              {customerDelta && (
+                <DeltaArrow
+                  direction={customerDelta.direction}
+                  tone={customerDelta.tone}
+                  prevValue={customerDelta.prevValue}
+                  prevSub={customerDelta.prevSub}
+                />
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-ink-3">{customerBugs ?? 0} bug{customerBugs === 1 ? "" : "s"}</p>
+          </div>
+          <div className="flex-1 border-l border-border pl-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.05em] text-ink-4">QA</p>
+            <div className="mt-0.5 flex items-baseline gap-1.5">
+              <p className={`text-[20px] font-semibold leading-tight ${valueClass(qaTone)}`}>{pct(qaRate)}</p>
+              {qaDelta && (
+                <DeltaArrow
+                  direction={qaDelta.direction}
+                  tone={qaDelta.tone}
+                  prevValue={qaDelta.prevValue}
+                  prevSub={qaDelta.prevSub}
+                />
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-ink-3">{qaBugs ?? 0} bug{qaBugs === 1 ? "" : "s"}</p>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
 function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
   if (curr == null || prev == null) return null;
   const direction = curr > prev ? "up" : curr < prev ? "down" : null;
@@ -122,7 +172,7 @@ export function Quality() {
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.total > 0 && w.week_start < currentWeek)
+    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
@@ -174,22 +224,29 @@ export function Quality() {
   // KPI computations
   const storyMix     = safeRate(lastWeek?.stories, lastWeek?.total);
   const prevStoryMix = safeRate(prevWeek?.stories, prevWeek?.total);
-  const bugRate      = safeRate(lastWeek?.bugs,    lastWeek?.total);
-  const prevBugRate  = safeRate(prevWeek?.bugs,    prevWeek?.total);
+  const customerRate = safeRate(lastWeek?.customer_bugs, lastWeek?.total);
+  const qaRate       = safeRate(lastWeek?.qa_bugs,       lastWeek?.total);
+  const prevCustomerRate = safeRate(prevWeek?.customer_bugs, prevWeek?.total);
+  const prevQaRate       = safeRate(prevWeek?.qa_bugs,       prevWeek?.total);
   const taskRate     = safeRate(lastWeek?.tasks,   lastWeek?.total);
   const prevTaskRate = safeRate(prevWeek?.tasks,   prevWeek?.total);
 
-  const prevSub = prevWeek ? `wk of ${weekLabel(prevWeek.week_start)}` : undefined;
+  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
 
   const storyDelta = computeDelta({
     curr: storyMix, prev: prevStoryMix, higherIsBetter: true,
     fmtPrev: prevStoryMix != null ? pct(prevStoryMix) : undefined,
     prevSub: prevWeek ? `${prevSub} · ${prevWeek.stories} stories` : prevSub,
   });
-  const bugDelta = computeDelta({
-    curr: bugRate, prev: prevBugRate, higherIsBetter: false,
-    fmtPrev: prevBugRate != null ? pct(prevBugRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.bugs} bugs` : prevSub,
+  const customerDelta = computeDelta({
+    curr: customerRate, prev: prevCustomerRate, higherIsBetter: false,
+    fmtPrev: prevCustomerRate != null ? pct(prevCustomerRate) : undefined,
+    prevSub: prevWeek ? `${prevSub} · ${prevWeek.customer_bugs} cust bugs` : prevSub,
+  });
+  const qaDelta = computeDelta({
+    curr: qaRate, prev: prevQaRate, higherIsBetter: false,
+    fmtPrev: prevQaRate != null ? pct(prevQaRate) : undefined,
+    prevSub: prevWeek ? `${prevSub} · ${prevWeek.qa_bugs} QA bugs` : prevSub,
   });
   const taskDelta = computeDelta({
     curr: taskRate, prev: prevTaskRate, higherIsBetter: false,
@@ -209,7 +266,7 @@ export function Quality() {
         <p className="mt-1 text-[13px] text-ink-3">
           Stories vs Bugs vs Tasks mix across all delivered work.
           {lastWeek && (
-            <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
           )}
         </p>
       </header>
@@ -232,12 +289,13 @@ export function Quality() {
               tone={storyMix != null && storyMix >= 0.6 ? "ok" : "default"}
               delta={storyDelta}
             />
-            <KpiHero
-              label="Bug Rate"
-              value={pct(bugRate)}
-              sub={`${lastWeek.bugs} bug${lastWeek.bugs !== 1 ? "s" : ""}`}
-              tone={bugRate != null ? (bugRate < 0.2 ? "ok" : "warn") : "default"}
-              delta={bugDelta}
+            <BugsSplitCard
+              customerRate={customerRate}
+              qaRate={qaRate}
+              customerBugs={lastWeek.customer_bugs}
+              qaBugs={lastWeek.qa_bugs}
+              customerDelta={customerDelta}
+              qaDelta={qaDelta}
             />
             <KpiHero
               label="Task Rate"
@@ -268,7 +326,7 @@ export function Quality() {
           {teamData && teamData.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Team breakdown — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+                <CardTitle>Team breakdown — {weekLabel(lastWeek.week_start)}</CardTitle>
               </CardHeader>
               <CardBody pad="none">
                 <table className="w-full border-collapse text-sm">

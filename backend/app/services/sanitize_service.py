@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.services.attachment_extractor import extract_plan_descriptions
@@ -13,6 +14,8 @@ from app.services.scoring_service import ELIGIBLE_SCORING_STATUSES, MIN_STORY_PO
 logger = logging.getLogger(__name__)
 
 ALLOWED_ISSUE_TYPES: tuple[str, ...] = ("Story",)
+
+SPRINT_NORMALIZE_PREFIXES: tuple[str, ...] = ("FS", "IN", "BFX", "HR")
 
 
 def run_sanitize(db: Session, sync_state_id: int | None = None) -> dict[str, Any]:
@@ -30,6 +33,7 @@ def run_sanitize(db: Session, sync_state_id: int | None = None) -> dict[str, Any
     row in `sync_phases` for UI progress visibility.
     """
 
+    sprint_stats = _normalize_sprint_dates(db)
     extract_stats = extract_plan_descriptions(db, sync_state_id=sync_state_id)
     inserted, rescored, unchanged, orphaned = _upsert_scoring_rows(
         db, sync_state_id=sync_state_id
@@ -44,8 +48,44 @@ def run_sanitize(db: Session, sync_state_id: int | None = None) -> dict[str, Any
         "extraction_candidates": extract_stats["checked"],
         "extraction_skipped_unsupported": extract_stats["skipped"],
         "extraction_skipped_cached": extract_stats["skipped_cached"],
+        "sprints_examined": sprint_stats["examined"],
+        "sprints_adjusted": sprint_stats["adjusted"],
         "allowed_issue_types": list(ALLOWED_ISSUE_TYPES),
     }
+
+
+def _normalize_sprint_dates(db: Session) -> dict[str, int]:
+    """Snap sprint start_date back to the most recent Monday (floor) and set
+    end_date = start + 6 days (Sunday). Scope: sprints whose name starts with
+    FS / IN / BFX / HR. Only sprints that are out of alignment are touched."""
+    from app.models.sprint import Sprint
+
+    sprints = (
+        db.query(Sprint)
+        .filter(Sprint.start_date.isnot(None))
+        .filter(or_(*[Sprint.name.like(f"{p}%") for p in SPRINT_NORMALIZE_PREFIXES]))
+        .all()
+    )
+
+    adjusted = 0
+    for s in sprints:
+        wd = s.start_date.weekday()  # Mon=0..Sun=6
+        new_start_date = s.start_date.date() - timedelta(days=wd)
+        new_end_date = new_start_date + timedelta(days=6)
+        new_start = s.start_date.replace(
+            year=new_start_date.year, month=new_start_date.month, day=new_start_date.day
+        )
+        end_template = s.end_date if s.end_date is not None else s.start_date
+        new_end = end_template.replace(
+            year=new_end_date.year, month=new_end_date.month, day=new_end_date.day
+        )
+        if s.start_date != new_start or s.end_date != new_end:
+            s.start_date = new_start
+            s.end_date = new_end
+            adjusted += 1
+    if adjusted:
+        db.commit()
+    return {"examined": len(sprints), "adjusted": adjusted}
 
 
 def _upsert_scoring_rows(

@@ -10,6 +10,14 @@ function formatWeekLabel(weekStart) {
   return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function formatWeekRange(weekStart) {
+  const [year, month, day] = weekStart.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const end = new Date(year, month - 1, day + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 const SERIES_POINTS = "Story Points";
 const SERIES_DEVS = "Active Devs";
 
@@ -75,7 +83,7 @@ export function ResourceTrendsChart({ data = [], height = 280 }) {
               : "—";
           const pts = Math.round(row.story_points ?? 0);
           return (
-            `<div style="font-weight:600;margin-bottom:4px">Week of ${formatWeekLabel(row.week_start)}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>` +
             `<div style="display:flex;gap:8px;justify-content:space-between">` +
               `<span>${params[0]?.marker}${SERIES_POINTS}</span>` +
               `<span style="font-weight:600">${pts} · ${row.story_count} stories</span></div>` +

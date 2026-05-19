@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getTestCoverageSummary, getTestCoverageModules, getTestCoverageTrends } from "../../lib/api";
+import { getTestCoverageSummary, getTestCoverageByProduct, getTestCoverageModules, getTestCoverageTrends } from "../../lib/api";
 import { TestCoverageWeeklyChart } from "../../components/charts/TestCoverageWeeklyChart";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 
@@ -49,6 +49,34 @@ function MiniBar({ value, color }) {
   );
 }
 
+// Delta = current pct vs prev pct (both already 0–100). Returns null when no prev.
+function DeltaArrow({ pct, prevPct, size = 12 }) {
+  if (prevPct == null || pct == null) return null;
+  const diff = Math.round((pct - prevPct) * 10) / 10;
+  if (diff === 0) {
+    return (
+      <span style={{ fontSize: size - 1, color: "#94a3b8", fontWeight: 600 }} title="No change">
+        ±0
+      </span>
+    );
+  }
+  const up = diff > 0;
+  const color = up ? "#10b981" : "#ef4444";
+  return (
+    <span
+      title={`Was ${prevPct}%`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 1, color, fontSize: size, fontWeight: 700 }}
+    >
+      <svg width={size} height={size} viewBox="0 0 12 12" style={{ display: "inline-block" }}>
+        {up
+          ? <path d="M6 2 L10 8 L2 8 Z" fill={color} />
+          : <path d="M6 10 L10 4 L2 4 Z" fill={color} />}
+      </svg>
+      {Math.abs(diff)}%
+    </span>
+  );
+}
+
 export function CoverageOverview() {
   const [selectedFeature, setSelectedFeature] = useState(null);
   const [showZeroOnly, setShowZeroOnly] = useState(false);
@@ -66,6 +94,12 @@ export function CoverageOverview() {
     staleTime: 2 * 60 * 1000,
   });
 
+  const { data: byProduct = [] } = useQuery({
+    queryKey: ["test-coverage", "by-product"],
+    queryFn: getTestCoverageByProduct,
+    staleTime: 2 * 60 * 1000,
+  });
+
   const { data: trendData = [] } = useQuery({
     queryKey: ["test-coverage", "trends", trendFeature],
     queryFn: () => getTestCoverageTrends(trendFeature),
@@ -80,14 +114,18 @@ export function CoverageOverview() {
       map[d.feature].total += d.total;
       map[d.feature].modules.push(d);
     });
+    // Index by-product deltas by feature name for O(1) lookup
+    const productByName = {};
+    byProduct.forEach((p) => { productByName[p.feature] = p; });
     return Object.entries(map).map(([name, v]) => ({
       name,
       covered: v.covered,
       total: v.total,
       pct: pct(v.covered, v.total),
+      prev_pct: productByName[name]?.prev_pct ?? null,
       modules: v.modules,
     }));
-  }, [allModules]);
+  }, [allModules, byProduct]);
 
   const totalCovered = summary?.total_covered ?? 0;
   const totalTests   = summary?.total_cases ?? 0;
@@ -103,8 +141,9 @@ export function CoverageOverview() {
 
   const featureNames = features.map((f) => f.name);
 
+  const overallPrevPct = summary?.prev_pct ?? null;
   const kpis = [
-    { label: "Overall Coverage",  value: overallPct + "%", sub: totalCovered.toLocaleString() + " / " + totalTests.toLocaleString() + " tests", color: statusColor(overallPct) },
+    { label: "Overall Coverage",  value: overallPct + "%", sub: totalCovered.toLocaleString() + " / " + totalTests.toLocaleString() + " tests", color: statusColor(overallPct), prev_pct: overallPrevPct, pct: overallPct },
     { label: "Features Tracked",  value: productCount,  sub: "product areas",  color: "#6366f1" },
     { label: "Fully Covered",     value: fullyDone,     sub: "at 100%",         color: "#10b981" },
     { label: "Modules at 0%",     value: zeroModules.length, sub: "need attention", color: "#ef4444" },
@@ -119,7 +158,10 @@ export function CoverageOverview() {
           <div key={i} style={{ background:"#fff", borderRadius:14, padding:"18px 20px",
             boxShadow:"0 1px 4px rgba(0,0,0,0.07)", borderTop:"4px solid " + k.color }}>
             <div style={{ fontSize:11, fontWeight:600, color:"#94a3b8", textTransform:"uppercase", letterSpacing:1 }}>{k.label}</div>
-            <div style={{ fontSize:32, fontWeight:800, color:k.color, margin:"6px 0 2px" }}>{k.value}</div>
+            <div style={{ display:"flex", alignItems:"baseline", gap:8, margin:"6px 0 2px" }}>
+              <div style={{ fontSize:32, fontWeight:800, color:k.color }}>{k.value}</div>
+              {k.prev_pct != null && <DeltaArrow pct={k.pct} prevPct={k.prev_pct} size={13} />}
+            </div>
             <div style={{ fontSize:12, color:"#64748b" }}>{k.sub}</div>
           </div>
         ))}
@@ -182,7 +224,10 @@ export function CoverageOverview() {
                   transition:"all 0.2s" }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                   <div style={{ flex:1, paddingRight:8 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:"#0f172a" }}>{f.name}</div>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#0f172a", display:"flex", alignItems:"center", gap:6 }}>
+                      <span>{f.name}</span>
+                      <DeltaArrow pct={f.pct} prevPct={f.prev_pct} size={11} />
+                    </div>
                     <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>
                       {f.modules.length} modules · {f.covered}/{f.total} tests
                     </div>
@@ -244,17 +289,19 @@ export function CoverageOverview() {
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:12, fontWeight:600, color:"#0f172a",
                       whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                      <span style={{ color:"#64748b", fontWeight:500 }}>{m.feature}</span>
+                      <span style={{ color:"#cbd5e1", margin:"0 6px" }}>—</span>
                       {m.module}
                     </div>
-                    {!activeFeature && (
-                      <div style={{ fontSize:10, color:"#94a3b8" }}>{m.feature}</div>
-                    )}
                     <div style={{ marginTop:4 }}>
                       <MiniBar value={p} color={c} />
                     </div>
                   </div>
                   <div style={{ textAlign:"right", minWidth:56 }}>
-                    <div style={{ fontSize:13, fontWeight:800, color:c }}>{p}%</div>
+                    <div style={{ display:"flex", justifyContent:"flex-end", alignItems:"baseline", gap:4 }}>
+                      <span style={{ fontSize:13, fontWeight:800, color:c }}>{p}%</span>
+                      <DeltaArrow pct={p} prevPct={m.prev_pct} size={10} />
+                    </div>
                     <div style={{ fontSize:10, color:"#94a3b8" }}>{m.covered}/{m.total}</div>
                   </div>
                 </div>

@@ -124,6 +124,11 @@ def run_sync(
                     db.commit()
                     tick(db, phase_sync, processed=issues_synced)
 
+        # Jira's /search/approximate-count is an estimate that can drift from
+        # what the paginated search/jql endpoint actually yields. Reconcile
+        # items_total to the real count so the final bar reads N/N = 100%.
+        phase_sync.items_total = issues_synced
+        phase_sync.items_processed = issues_synced
         db.commit()
         close_phase(
             db,
@@ -133,6 +138,7 @@ def run_sync(
                 "new": staged_new,
                 "updated": staged_updated,
                 "unchanged": staged_unchanged,
+                "approximate_total": items_total,
             },
         )
 
@@ -218,7 +224,12 @@ def _build_jql(since: datetime | None, project_key: str | None) -> str:
 
 
 def persist_issue(
-    db: Session, jira_issue: dict[str, Any], settings: JiraSettings
+    db: Session,
+    jira_issue: dict[str, Any],
+    settings: JiraSettings,
+    *,
+    jira_client: "JiraClient | None" = None,
+    sprint_cache: "dict[int, dict[str, Any]] | None" = None,
 ) -> dict[str, int]:
     """Promote one staged Jira issue into the relational tables.
 
@@ -247,7 +258,10 @@ def persist_issue(
         description_adf=description_adf if isinstance(description_adf, dict) else None,
     )
 
-    _replace_issue_sprints(db, issue, fields.get(settings.field_sprint))
+    _replace_issue_sprints(
+        db, issue, fields.get(settings.field_sprint),
+        jira_client=jira_client, sprint_cache=sprint_cache,
+    )
     _upsert_comments(db, issue, fields.get("comment"))
     _upsert_attachments(db, issue, fields.get("attachment"))
     _upsert_worklogs(db, issue, fields.get("worklog"))
@@ -394,18 +408,34 @@ def _upsert_issue(
     return issue
 
 
-def _replace_issue_sprints(db: Session, issue: Issue, sprint_payload: Any) -> None:
+def _replace_issue_sprints(
+    db: Session,
+    issue: Issue,
+    sprint_payload: Any,
+    *,
+    jira_client: "JiraClient | None" = None,
+    sprint_cache: "dict[int, dict[str, Any]] | None" = None,
+) -> None:
     sprint_dicts = _normalize_sprint_payload(sprint_payload)
     db.execute(delete(IssueSprint).where(IssueSprint.issue_id == issue.id))
     for sprint_dict in sprint_dicts:
-        sprint = _upsert_sprint(db, sprint_dict)
+        sprint = _upsert_sprint(
+            db, sprint_dict,
+            jira_client=jira_client, sprint_cache=sprint_cache,
+        )
         if sprint is None:
             continue
         db.add(IssueSprint(issue_id=issue.id, sprint_id=sprint.id))
     db.flush()
 
 
-def _upsert_sprint(db: Session, payload: dict[str, Any]) -> Sprint | None:
+def _upsert_sprint(
+    db: Session,
+    payload: dict[str, Any],
+    *,
+    jira_client: "JiraClient | None" = None,
+    sprint_cache: "dict[int, dict[str, Any]] | None" = None,
+) -> Sprint | None:
     sprint_id = payload.get("id")
     if sprint_id is None:
         return None
@@ -413,6 +443,18 @@ def _upsert_sprint(db: Session, payload: dict[str, Any]) -> Sprint | None:
         sprint_id_int = int(sprint_id)
     except (TypeError, ValueError):
         return None
+    # Prefer authoritative payload from /rest/agile/1.0/sprint/{id}. The
+    # embedded-in-issue payload is frozen at the time of last issue.updated
+    # so sprint state transitions (future → active → closed) and late date
+    # population are missed. Cache per-run to avoid duplicate fetches.
+    if jira_client is not None and sprint_cache is not None:
+        if sprint_id_int not in sprint_cache:
+            try:
+                sprint_cache[sprint_id_int] = jira_client.get_sprint(sprint_id_int)
+            except Exception as exc:
+                logger.warning("sprint refresh failed id=%s: %s", sprint_id_int, exc)
+                sprint_cache[sprint_id_int] = payload
+        payload = sprint_cache[sprint_id_int]
     sprint = db.execute(
         select(Sprint).where(Sprint.jira_sprint_id == sprint_id_int)
     ).scalar_one_or_none()
@@ -422,8 +464,13 @@ def _upsert_sprint(db: Session, payload: dict[str, Any]) -> Sprint | None:
     sprint.name = payload.get("name")
     sprint.state = payload.get("state")
     sprint.board_id = _to_int(payload.get("boardId") or payload.get("originBoardId"))
-    sprint.start_date = _to_datetime(payload.get("startDate"))
-    sprint.end_date = _to_datetime(payload.get("endDate"))
+    # Preserve manually-normalized start_date / end_date once they exist; only
+    # populate from Jira on the first sync of a new sprint (or if a prior sync
+    # left them null).
+    if sprint.start_date is None:
+        sprint.start_date = _to_datetime(payload.get("startDate"))
+    if sprint.end_date is None:
+        sprint.end_date = _to_datetime(payload.get("endDate"))
     sprint.complete_date = _to_datetime(payload.get("completeDate"))
     db.flush()
     return sprint

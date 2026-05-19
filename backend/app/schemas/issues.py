@@ -33,6 +33,9 @@ class IssueListItemOut(BaseModel):
     created_at: datetime | None
     updated_at: datetime | None
     resolved_at: datetime | None
+    sprint_id: int | None = None
+    sprint_name: str | None = None
+    sprint_state: str | None = None
 
 
 class IssueListOut(BaseModel):

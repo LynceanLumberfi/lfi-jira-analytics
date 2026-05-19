@@ -83,7 +83,19 @@ function pct(v) {
 function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
+function currentIsoWeekMonday() {
+  const dt = new Date();
+  const day = dt.getDay() || 7;
+  dt.setDate(dt.getDate() - day + 1);
+  dt.setHours(0, 0, 0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
@@ -122,8 +134,9 @@ export function Overview() {
     queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
-  // Last and second-to-last ISO weeks that had ≥1 completed Story
-  const activeWeeks = trends ? [...trends].reverse().filter((w) => w.story_count > 0) : [];
+  // Last full week (week of last Sunday) and the one before
+  const currentWeek = currentIsoWeekMonday();
+  const activeWeeks = trends ? [...trends].reverse().filter((w) => w.week_start < currentWeek) : [];
   const lastActiveWeek = activeWeeks[0] ?? null;
   const prevActiveWeek = activeWeeks[1] ?? null;
 
@@ -136,7 +149,7 @@ export function Overview() {
   const noData = !tLoading && !lastActiveWeek;
 
   const prevSub = prevActiveWeek
-    ? `wk of ${weekLabel(prevActiveWeek.week_start)} · ${prevActiveWeek.story_count} stories`
+    ? `${weekLabel(prevActiveWeek.week_start)} · ${prevActiveWeek.story_count} stories`
     : undefined;
 
   const spDelta = computeDelta({
@@ -184,7 +197,7 @@ export function Overview() {
           value={lastActiveWeek ? `${Math.round(lastActiveWeek.story_points)} pts` : "—"}
           sub={
             noData ? "no completed stories yet" :
-            lastActiveWeek ? `${lastActiveWeek.story_count} stories · wk of ${weekLabel(lastActiveWeek.week_start)}` : ""
+            lastActiveWeek ? `${lastActiveWeek.story_count} stories · ${weekLabel(lastActiveWeek.week_start)}` : ""
           }
           spark={spSpark}
           sparkTone="accent"

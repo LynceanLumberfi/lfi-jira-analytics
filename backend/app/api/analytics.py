@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 def get_filters(
     team_id: int | None = Query(None),
     sprint_id: int | None = Query(None),
+    sprint_ids: list[int] | None = Query(None),
     assignee_id: int | None = Query(None),
     project: str | None = Query(None),
     issue_type: str | None = Query(None),
@@ -33,10 +34,12 @@ def get_filters(
     resolved_since: datetime | None = Query(None),
     resolved_until: datetime | None = Query(None),
     has_sprint: bool | None = Query(None),
+    is_done: bool | None = Query(None),
 ) -> AnalyticsFilters:
     return AnalyticsFilters(
         team_id=team_id,
         sprint_id=sprint_id,
+        sprint_ids=tuple(sprint_ids) if sprint_ids else None,
         assignee_id=assignee_id,
         project=project,
         issue_type=issue_type,
@@ -45,6 +48,7 @@ def get_filters(
         resolved_since=resolved_since,
         resolved_until=resolved_until,
         has_sprint=has_sprint,
+        is_done=is_done,
     )
 
 
@@ -94,11 +98,13 @@ def story_trends(
     team_id: int | None = Query(None),
     team_ids: list[int] = Query(default=[]),
     has_sprint: bool | None = Query(None),
+    sprint_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[StoryTrendOut]:
     rows = analytics_service.story_trends(
         db, last=last, project=project, team_id=team_id,
         team_ids=team_ids or None, has_sprint=has_sprint,
+        sprint_id=sprint_id,
     )
     return [StoryTrendOut(**_coerce(r)) for r in rows]
 
@@ -109,11 +115,12 @@ def issue_type_trends(
     project: str | None = Query(None),
     team_id: int | None = Query(None),
     team_ids: list[int] = Query(default=[]),
+    sprint_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[IssueTypeTrendOut]:
     rows = analytics_service.issue_type_trends(
         db, last=last, project=project, team_id=team_id,
-        team_ids=team_ids or None,
+        team_ids=team_ids or None, sprint_id=sprint_id,
     )
     return [IssueTypeTrendOut(**_coerce(r)) for r in rows]
 

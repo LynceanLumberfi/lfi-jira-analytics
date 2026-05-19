@@ -109,5 +109,7 @@ class IssueTypeTrendOut(BaseModel):
     week_start: date
     stories: int
     bugs: int
+    customer_bugs: int = 0
+    qa_bugs: int = 0
     tasks: int
     total: int

@@ -31,6 +31,9 @@ _SORT_COLUMNS = {
     "spent_hours": "f.spent_hours",
     "estimate_hours": "f.estimate_hours",
     "jira_key": "f.jira_key",
+    "sprint_name": "ls.name",
+    "status": "f.status",
+    "issue_type": "f.issue_type",
 }
 
 
@@ -39,6 +42,7 @@ def list_issues(
     team_id: int | None = Query(None),
     team_ids: list[int] | None = Query(None),
     sprint_id: int | None = Query(None),
+    sprint_ids: list[int] | None = Query(None),
     assignee_id: int | None = Query(None),
     project: str | None = Query(None),
     status: str | None = Query(None),
@@ -47,6 +51,15 @@ def list_issues(
     has_ai_score: bool | None = Query(None),
     has_sprint: bool | None = Query(None),
     is_done: bool | None = Query(None),
+    score_status: str | None = Query(
+        None,
+        description="pending | scored | unscored | attention",
+        regex="^(pending|scored|unscored|attention)$",
+    ),
+    staged: bool | None = Query(
+        None,
+        description="true: issues with a pending/approved staging row (queued for promote)",
+    ),
     resolved_since: Optional[datetime] = Query(None),
     resolved_until: Optional[datetime] = Query(None),
     q: str | None = Query(None, description="Substring match on jira_key or summary"),
@@ -86,6 +99,26 @@ def list_issues(
         clauses.append("f.quality_score IS NOT NULL")
     elif has_ai_score is False:
         clauses.append("f.quality_score IS NULL")
+    if score_status == "pending":
+        clauses.append("f.ai_scoring_status = 'pending'")
+    elif score_status == "scored":
+        clauses.append("f.ai_scoring_status = 'completed'")
+    elif score_status == "unscored":
+        clauses.append("f.ai_scoring_status IS NULL")
+    elif score_status == "attention":
+        clauses.append(
+            "(f.ai_scoring_status = 'failed' OR f.quality_score < 2.5)"
+        )
+    if staged is True:
+        clauses.append(
+            "f.jira_key IN (SELECT jira_key FROM staging_issues"
+            " WHERE review_status IN ('pending', 'approved'))"
+        )
+    elif staged is False:
+        clauses.append(
+            "f.jira_key NOT IN (SELECT jira_key FROM staging_issues"
+            " WHERE review_status IN ('pending', 'approved'))"
+        )
     if has_sprint is True:
         clauses.append("f.issue_id IN (SELECT issue_id FROM issue_sprints)")
     elif has_sprint is False:
@@ -102,6 +135,22 @@ def list_issues(
             "f.issue_id IN (SELECT issue_id FROM issue_sprints WHERE sprint_id = :sprint_id)"
         )
         params["sprint_id"] = sprint_id
+    if sprint_ids:
+        # Latest-sprint-per-issue must be in the given set. Matches the
+        # bucketing used by /api/analytics/story-trends so hero counts and
+        # this grid stay consistent.
+        clauses.append(
+            "f.issue_id IN ("
+            " SELECT lsp.issue_id FROM ("
+            "   SELECT DISTINCT ON (iss.issue_id) iss.issue_id, iss.sprint_id"
+            "   FROM issue_sprints iss"
+            "   JOIN sprints s ON s.id = iss.sprint_id"
+            "   WHERE s.end_date IS NOT NULL"
+            "   ORDER BY iss.issue_id, s.end_date DESC"
+            " ) lsp WHERE lsp.sprint_id = ANY(:sprint_ids)"
+            ")"
+        )
+        params["sprint_ids"] = sprint_ids
     if resolved_since is not None:
         clauses.append("f.resolved_at >= :resolved_since")
         params["resolved_since"] = resolved_since
@@ -145,8 +194,19 @@ def list_issues(
             f.scored_at,
             f.created_at,
             f.updated_at,
-            f.resolved_at
+            f.resolved_at,
+            ls.id    AS sprint_id,
+            ls.name  AS sprint_name,
+            ls.state AS sprint_state
         FROM v_issue_facts f
+        LEFT JOIN LATERAL (
+            SELECT s.id, s.name, s.state
+            FROM issue_sprints iss
+            JOIN sprints s ON s.id = iss.sprint_id
+            WHERE iss.issue_id = f.issue_id AND s.end_date IS NOT NULL
+            ORDER BY s.end_date DESC
+            LIMIT 1
+        ) ls ON TRUE
         {where}
         ORDER BY {sort_col} {direction} NULLS LAST, f.issue_id DESC
         LIMIT :limit OFFSET :offset

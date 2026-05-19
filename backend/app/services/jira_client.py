@@ -124,6 +124,14 @@ class JiraClient:
 
         return self._request("GET", url, follow_redirects=True).content
 
+    def get_sprint(self, sprint_id: int) -> dict[str, Any]:
+        """Fetch authoritative sprint metadata from the Agile API.
+
+        Used during promote to refresh state/dates that the embedded-in-issue
+        payload won't carry (sprint state changes don't bump issue.updated).
+        """
+        return self._request("GET", f"/rest/agile/1.0/sprint/{sprint_id}").json()
+
     def get_issue_worklogs(
         self, issue_key: str, page_size: int = 100
     ) -> list[dict[str, Any]]:

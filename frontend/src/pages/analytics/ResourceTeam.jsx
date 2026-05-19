@@ -1,7 +1,7 @@
-import { useParams, Navigate } from "react-router-dom";
+import { useParams, Navigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByAssignee, getAnalyticsStoryTrends, getTeams } from "../../lib/api";
+import { getAnalyticsByAssignee, getAnalyticsStoryTrends, getSprints, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { ResourceTrendsChart } from "../../components/charts/ResourceTrendsChart";
@@ -14,7 +14,10 @@ function fmt(v, dp = 0) {
 function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function nextMonday(weekStart) {
@@ -100,6 +103,9 @@ function safeRate(num, den) {
 export function ResourceTeam() {
   const { teamId } = useParams();
   const numTeamId = Number(teamId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sprintIdParam = searchParams.get("sprint_id");
+  const sprintId = sprintIdParam ? Number(sprintIdParam) : null;
 
   const { data: teams } = useQuery({
     queryKey: ["teams"],
@@ -110,6 +116,13 @@ export function ResourceTeam() {
   const team = teams?.find((t) => t.id === numTeamId);
   const isKnown = teams !== undefined;
 
+  const { data: sprints } = useQuery({
+    queryKey: ["sprints", { team_id: numTeamId }],
+    queryFn: () => getSprints({ team_id: numTeamId }),
+    enabled: !Number.isNaN(numTeamId),
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (isKnown && (!team || !isFeaturedTeam(team.name))) {
     return <Navigate to="/analytics/resource" replace />;
   }
@@ -117,14 +130,14 @@ export function ResourceTeam() {
   const teamIds = [numTeamId];
 
   const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, teamIds, "has_sprint"],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds, has_sprint: true }),
+    queryKey: ["analytics", "story-trends", 12, teamIds, "has_sprint", sprintId],
+    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds, has_sprint: true, sprint_id: sprintId ?? undefined }),
     enabled: isKnown,
   });
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.story_count > 0 && w.week_start < currentWeek)
+    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
@@ -132,17 +145,25 @@ export function ResourceTeam() {
   const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
   const { data: devRows } = useQuery({
-    queryKey: ["analytics", "by-assignee", teamIds, lastWeek?.week_start, "has_sprint"],
+    queryKey: ["analytics", "by-assignee", teamIds, lastWeek?.week_start, "has_sprint", sprintId],
     queryFn: () =>
       getAnalyticsByAssignee({
         issue_type: "Story",
         team_ids: teamIds,
+        sprint_id: sprintId ?? undefined,
         resolved_since: lastWeek.week_start,
         resolved_until: weekResolved,
         has_sprint: true,
       }),
     enabled: isKnown && !!lastWeek,
   });
+
+  function onSprintChange(e) {
+    const next = new URLSearchParams(searchParams);
+    if (e.target.value) next.set("sprint_id", e.target.value);
+    else next.delete("sprint_id");
+    setSearchParams(next, { replace: true });
+  }
 
   const storyPoints = lastWeek?.story_points ?? null;
   const prevStoryPoints = prevWeek?.story_points ?? null;
@@ -153,7 +174,7 @@ export function ResourceTeam() {
   const hoursPerPoint = lastWeek?.hours_per_point ?? null;
   const prevHoursPerPoint = prevWeek?.hours_per_point ?? null;
 
-  const prevSub = prevWeek ? `wk of ${weekLabel(prevWeek.week_start)}` : undefined;
+  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
 
   const pointsDelta = computeDelta({
     curr: storyPoints,
@@ -193,14 +214,30 @@ export function ResourceTeam() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header>
-        <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
-        <p className="mt-1 text-[13px] text-ink-3">
-          Capacity, velocity, and points-per-resource breakdown.
-          {lastWeek && (
-            <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
-          )}
-        </p>
+      <header className="flex items-end justify-between gap-4">
+        <div>
+          <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
+          <p className="mt-1 text-[13px] text-ink-3">
+            Capacity, velocity, and points-per-resource breakdown.
+            {lastWeek && (
+              <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+            )}
+          </p>
+        </div>
+        {sprints?.length > 0 && (
+          <select
+            value={sprintId ?? ""}
+            onChange={onSprintChange}
+            className="rounded border border-border bg-bg-sunken px-2.5 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+          >
+            <option value="">All sprints</option>
+            {sprints.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name ?? "Unnamed"} ({s.jira_sprint_id})
+              </option>
+            ))}
+          </select>
+        )}
       </header>
 
       {isLoading ? (
@@ -262,7 +299,7 @@ export function ResourceTeam() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Resources — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Resources — {weekLabel(lastWeek.week_start)}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
                 {devRows ? `${devRows.length} developers` : ""}
               </span>

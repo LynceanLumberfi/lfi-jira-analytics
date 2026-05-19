@@ -13,7 +13,10 @@ function fmt(v, dp = 0) {
 function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function nextMonday(weekStart) {
@@ -116,7 +119,7 @@ export function Resource() {
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.story_count > 0 && w.week_start < currentWeek)
+    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
@@ -146,7 +149,7 @@ export function Resource() {
   const hoursPerPoint = lastWeek?.hours_per_point ?? null;
   const prevHoursPerPoint = prevWeek?.hours_per_point ?? null;
 
-  const prevSub = prevWeek ? `wk of ${weekLabel(prevWeek.week_start)}` : undefined;
+  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
 
   const pointsDelta = computeDelta({
     curr: storyPoints,
@@ -191,7 +194,7 @@ export function Resource() {
         <p className="mt-1 text-[13px] text-ink-3">
           Capacity, velocity, and points-per-resource breakdown across teams.
           {lastWeek && (
-            <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
           )}
         </p>
       </header>
@@ -256,7 +259,7 @@ export function Resource() {
           {activeTeamRows.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Team breakdown — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+                <CardTitle>Team breakdown — {weekLabel(lastWeek.week_start)}</CardTitle>
                 <span className="text-[12.5px] text-ink-3">Sprint stories only</span>
               </CardHeader>
               <CardBody pad="none">

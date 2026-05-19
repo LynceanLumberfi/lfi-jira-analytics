@@ -11,6 +11,14 @@ function formatWeekLabel(weekStart) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function formatWeekRange(weekStart) {
+  const [year, month, day] = weekStart.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const end = new Date(year, month - 1, day + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 function safeRate(num, den) {
   if (!den || den <= 0) return null;
   return num / den;
@@ -84,7 +92,7 @@ export function SkillAdoptionTrendsChart({ data = [], height = 280 }) {
           const row = data[idx];
           if (!row) return "";
           const lines = [
-            `<div style="font-weight:600;margin-bottom:4px">Week of ${formatWeekLabel(row.week_start)}</div>`,
+            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>`,
           ];
           for (const p of params) {
             if (p.value == null) continue;

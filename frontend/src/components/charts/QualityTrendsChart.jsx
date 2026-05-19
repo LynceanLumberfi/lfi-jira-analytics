@@ -10,13 +10,23 @@ function formatWeekLabel(weekStart) {
   return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function formatWeekRange(weekStart) {
+  const [year, month, day] = weekStart.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const end = new Date(year, month - 1, day + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 const SERIES_STORIES = "Stories";
-const SERIES_BUGS = "Bugs";
+const SERIES_CUSTOMER_BUGS = "Customer Bugs";
+const SERIES_QA_BUGS = "QA Bugs";
 const SERIES_TASKS = "Tasks";
 
 const SERIES_COLORS = {
   [SERIES_STORIES]: "#86efac",
-  [SERIES_BUGS]: "#b91c1c",
+  [SERIES_CUSTOMER_BUGS]: "#b91c1c",
+  [SERIES_QA_BUGS]: "#f59e0b",
   [SERIES_TASKS]: "#fef08a",
 };
 
@@ -36,13 +46,13 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
 
     const labels = data.map((r) => formatWeekLabel(r.week_start));
     const stories = data.map((r) => r.stories ?? 0);
-    const bugs = data.map((r) => r.bugs ?? 0);
+    const customerBugs = data.map((r) => r.customer_bugs ?? 0);
+    const qaBugs = data.map((r) => r.qa_bugs ?? 0);
     const tasks = data.map((r) => r.tasks ?? 0);
 
     const dim = 0.15;
-    const storyOpacity = hoveredSeries == null || hoveredSeries === SERIES_STORIES ? 1 : dim;
-    const bugOpacity   = hoveredSeries == null || hoveredSeries === SERIES_BUGS    ? 1 : dim;
-    const taskOpacity  = hoveredSeries == null || hoveredSeries === SERIES_TASKS   ? 1 : dim;
+    const opacityFor = (name) =>
+      hoveredSeries == null || hoveredSeries === name ? 1 : dim;
 
     const axisBase = {
       axisLine: { lineStyle: { color: colors.border } },
@@ -69,7 +79,7 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
           const total = row.total || 0;
           const pct = (v) => total > 0 ? `${Math.round((v / total) * 100)}%` : "0%";
           return (
-            `<div style="font-weight:600;margin-bottom:4px">Week of ${formatWeekLabel(row.week_start)}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>` +
             params
               .map((p) =>
                 `<div style="display:flex;gap:12px;justify-content:space-between">` +
@@ -104,21 +114,28 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
           stack: "total",
           data: stories,
           barMaxWidth: 40,
-          itemStyle: { color: SERIES_COLORS[SERIES_STORIES], opacity: storyOpacity },
+          itemStyle: { color: SERIES_COLORS[SERIES_STORIES], opacity: opacityFor(SERIES_STORIES) },
         },
         {
-          name: SERIES_BUGS,
+          name: SERIES_CUSTOMER_BUGS,
           type: "bar",
           stack: "total",
-          data: bugs,
-          itemStyle: { color: SERIES_COLORS[SERIES_BUGS], opacity: bugOpacity },
+          data: customerBugs,
+          itemStyle: { color: SERIES_COLORS[SERIES_CUSTOMER_BUGS], opacity: opacityFor(SERIES_CUSTOMER_BUGS) },
+        },
+        {
+          name: SERIES_QA_BUGS,
+          type: "bar",
+          stack: "total",
+          data: qaBugs,
+          itemStyle: { color: SERIES_COLORS[SERIES_QA_BUGS], opacity: opacityFor(SERIES_QA_BUGS) },
         },
         {
           name: SERIES_TASKS,
           type: "bar",
           stack: "total",
           data: tasks,
-          itemStyle: { color: SERIES_COLORS[SERIES_TASKS], opacity: taskOpacity },
+          itemStyle: { color: SERIES_COLORS[SERIES_TASKS], opacity: opacityFor(SERIES_TASKS) },
         },
       ],
     };
@@ -135,7 +152,7 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
     );
   }
 
-  const legendItems = [SERIES_STORIES, SERIES_BUGS, SERIES_TASKS];
+  const legendItems = [SERIES_STORIES, SERIES_CUSTOMER_BUGS, SERIES_QA_BUGS, SERIES_TASKS];
 
   return (
     <div>

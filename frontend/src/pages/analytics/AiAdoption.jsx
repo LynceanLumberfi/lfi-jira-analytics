@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByTeam, getAnalyticsStoryTrends, getIssues, getTeams } from "../../lib/api";
+import { getAnalyticsByTeam, getAnalyticsStoryTrends, getIssues, getSprints, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
@@ -15,12 +15,23 @@ function pct(v) {
 function weekLabel(weekStart) {
   if (!weekStart) return "";
   const [y, m, d] = weekStart.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function nextMonday(weekStart) {
   const [y, m, d] = weekStart.split("-").map(Number);
   const dt = new Date(y, m - 1, d + 7);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
+function weekEndSunday(weekStart) {
+  // weekStart is a Monday (YYYY-MM-DD); returns its Sunday (start + 6 days).
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + 6);
   const pad = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
@@ -123,41 +134,52 @@ export function AiAdoption() {
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.story_count > 0 && w.week_start < currentWeek)
+    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
 
-  const weekResolved = lastWeek ? nextMonday(lastWeek.week_start) : null;
+  // Find every sprint whose end_date falls in lastWeek (Mon-Sun). All other
+  // data on this page is keyed off this sprint_ids list — no resolved_at.
+  const { data: weekSprints } = useQuery({
+    queryKey: ["sprints", "week", lastWeek?.week_start],
+    queryFn: () =>
+      getSprints({
+        end_from: lastWeek.week_start,
+        end_to: weekEndSunday(lastWeek.week_start),
+      }),
+    enabled: !!lastWeek,
+    staleTime: 5 * 60 * 1000,
+  });
+  const weekSprintIds = (weekSprints || []).map((s) => s.id);
 
   const { data: teamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Story", featuredIds, lastWeek?.week_start, "has_sprint"],
+    queryKey: ["analytics", "by-team", "Story", featuredIds, weekSprintIds],
     queryFn: () =>
       getAnalyticsByTeam({
         issue_type: "Story",
+        is_done: true,
         team_ids: featuredIds,
-        resolved_since: lastWeek.week_start,
-        resolved_until: weekResolved,
+        sprint_ids: weekSprintIds,
         has_sprint: true,
       }),
-    enabled: teamIdsReady && !!lastWeek,
+    enabled: teamIdsReady && weekSprintIds.length > 0,
   });
 
   const { data: weekIssues } = useQuery({
-    queryKey: ["issues", "week-stories", featuredIds, lastWeek?.week_start, "has_sprint"],
+    queryKey: ["issues", "week-stories", featuredIds, weekSprintIds],
     queryFn: () =>
       getIssues({
         issue_type: "Story",
         is_done: true,
         has_sprint: true,
         team_ids: featuredIds,
-        resolved_since: lastWeek.week_start,
-        resolved_until: weekResolved,
+        sprint_ids: weekSprintIds,
         sort: "jira_key",
         order: "asc",
         limit: 200,
       }),
-    enabled: teamIdsReady && !!lastWeek,
+    enabled: teamIdsReady && weekSprintIds.length > 0,
   });
 
   const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
@@ -173,7 +195,7 @@ export function AiAdoption() {
   const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
   const prevSub = prevWeek
-    ? `wk of ${weekLabel(prevWeek.week_start)}`
+    ? weekLabel(prevWeek.week_start)
     : undefined;
 
   const storyDelta = computeDelta({
@@ -217,7 +239,7 @@ export function AiAdoption() {
         <p className="mt-1 text-[13px] text-ink-3">
           Skill adoption across delivered Stories and the engineers shipping them.
           {lastWeek && (
-            <> Week of <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
           )}
         </p>
       </header>
@@ -307,7 +329,7 @@ export function AiAdoption() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Stories delivered — week of {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Stories delivered — {weekLabel(lastWeek.week_start)}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
                 {weekIssues ? `${weekIssues.total} stories` : ""}
               </span>

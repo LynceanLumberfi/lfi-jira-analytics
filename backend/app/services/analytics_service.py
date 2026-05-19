@@ -19,6 +19,7 @@ CACHE_READ_PRICE_PER_MTOK = 0.30
 class AnalyticsFilters:
     team_id: int | None = None
     sprint_id: int | None = None
+    sprint_ids: tuple[int, ...] | None = None
     assignee_id: int | None = None
     project: str | None = None
     issue_type: str | None = None
@@ -27,6 +28,7 @@ class AnalyticsFilters:
     resolved_since: datetime | None = None
     resolved_until: datetime | None = None
     has_sprint: bool | None = None
+    is_done: bool | None = None
 
 
 def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, dict[str, Any]]:
@@ -63,10 +65,29 @@ def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, di
             f"{alias}.issue_id IN (SELECT issue_id FROM issue_sprints WHERE sprint_id = :sprint_id)"
         )
         params["sprint_id"] = filters.sprint_id
+    if filters.sprint_ids:
+        # "Latest sprint per issue must be in this set" — matches the bucketing
+        # used by story_trends so KPI heroes and breakdowns stay consistent.
+        clauses.append(
+            f"{alias}.issue_id IN ("
+            " SELECT lsp.issue_id FROM ("
+            "   SELECT DISTINCT ON (iss.issue_id) iss.issue_id, iss.sprint_id"
+            "   FROM issue_sprints iss"
+            "   JOIN sprints s ON s.id = iss.sprint_id"
+            "   WHERE s.end_date IS NOT NULL"
+            "   ORDER BY iss.issue_id, s.end_date DESC"
+            " ) lsp WHERE lsp.sprint_id = ANY(:sprint_ids)"
+            ")"
+        )
+        params["sprint_ids"] = list(filters.sprint_ids)
     if filters.has_sprint is True:
         clauses.append(f"{alias}.issue_id IN (SELECT issue_id FROM issue_sprints)")
     elif filters.has_sprint is False:
         clauses.append(f"{alias}.issue_id NOT IN (SELECT issue_id FROM issue_sprints)")
+    if filters.is_done is True:
+        clauses.append(f"{alias}.is_done IS TRUE")
+    elif filters.is_done is False:
+        clauses.append(f"{alias}.is_done IS NOT TRUE")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -256,6 +277,35 @@ def _apply_team_filter(
 # ---------- story trends (weekly, Overview chart) ----------
 
 
+def _build_universe_cte(sprint_id: int | None) -> str:
+    if sprint_id is not None:
+        return """
+        in_universe AS (
+            SELECT iss.issue_id,
+                   date_trunc('week', s.end_date)::date AS week_start
+            FROM issue_sprints iss
+            JOIN sprints s ON s.id = iss.sprint_id
+            WHERE s.end_date IS NOT NULL
+              AND iss.sprint_id = :sprint_id
+        )"""
+    return """
+        latest_sprint_per_issue AS (
+            SELECT DISTINCT ON (iss.issue_id)
+                iss.issue_id,
+                s.end_date,
+                date_trunc('week', s.end_date)::date AS week_start
+            FROM issue_sprints iss
+            JOIN sprints s ON s.id = iss.sprint_id
+            WHERE s.end_date IS NOT NULL
+            ORDER BY iss.issue_id, s.end_date DESC
+        ),
+        in_universe AS (
+            SELECT issue_id, week_start
+            FROM latest_sprint_per_issue
+            WHERE EXTRACT(YEAR FROM end_date) = :year
+        )"""
+
+
 def story_trends(
     db: Session,
     *,
@@ -264,56 +314,62 @@ def story_trends(
     team_id: int | None = None,
     team_ids: list[int] | None = None,
     has_sprint: bool | None = None,
+    sprint_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    # `last` and `has_sprint` are accepted for API compatibility but no longer
+    # affect the query: bucketing is by sprint end_date (year 2026 by default,
+    # or one specific sprint when sprint_id is set). Sprint linkage is implicit.
     extra_clauses = []
-    params: dict[str, Any] = {"last": last}
+    params: dict[str, Any] = {}
+    if sprint_id is not None:
+        params["sprint_id"] = sprint_id
+    else:
+        params["year"] = 2026
     if project:
         extra_clauses.append("AND f.project = :project")
         params["project"] = project
     _apply_team_filter(extra_clauses, params, team_id, team_ids)
-    if has_sprint is True:
-        extra_clauses.append("AND f.issue_id IN (SELECT issue_id FROM issue_sprints)")
-    elif has_sprint is False:
-        extra_clauses.append("AND f.issue_id NOT IN (SELECT issue_id FROM issue_sprints)")
     extra = "\n            ".join(extra_clauses)
+    universe_cte = _build_universe_cte(sprint_id)
 
     sql = text(
         f"""
-        WITH bounds AS (
-            SELECT (date_trunc('week', NOW()) - ((:last - 1) * INTERVAL '1 week'))::date AS week_from
-        ),
+        WITH {universe_cte},
         weeks AS (
             SELECT generate_series(
-                (SELECT week_from FROM bounds),
-                date_trunc('week', NOW())::date,
+                COALESCE((SELECT MIN(week_start) FROM in_universe), date_trunc('week', NOW())::date),
+                LEAST(
+                    COALESCE((SELECT MAX(week_start) FROM in_universe), date_trunc('week', NOW())::date),
+                    date_trunc('week', NOW())::date
+                ),
                 INTERVAL '1 week'
             )::date AS week_start
         ),
         done_stories AS (
             SELECT
-                date_trunc('week', f.resolved_at)::date AS week_start,
+                i2.week_start,
                 f.assignee_id,
                 f.story_points,
                 f.spent_hours,
                 f.skill_usage_detected,
                 (f.quality_score IS NOT NULL) AS is_scored
             FROM v_issue_facts f
+            JOIN in_universe i2 ON i2.issue_id = f.issue_id
             WHERE f.issue_type = 'Story'
               AND f.is_done IS TRUE
-              AND f.resolved_at >= (SELECT week_from FROM bounds)
               {extra}
         ),
         done_any_weekly AS (
             SELECT
-                date_trunc('week', f.resolved_at)::date  AS week_start,
-                COUNT(DISTINCT f.assignee_id)            AS active_delivered_devs
+                i2.week_start,
+                COUNT(DISTINCT f.assignee_id) AS active_delivered_devs
             FROM v_issue_facts f
+            JOIN in_universe i2 ON i2.issue_id = f.issue_id
             WHERE f.issue_type = 'Story'
               AND f.is_done IS TRUE
-              AND f.resolved_at >= (SELECT week_from FROM bounds)
               AND f.assignee_id IS NOT NULL
               {extra}
-            GROUP BY 1
+            GROUP BY i2.week_start
         )
         SELECT
             w.week_start,
@@ -357,40 +413,53 @@ def issue_type_trends(
     project: str | None = None,
     team_id: int | None = None,
     team_ids: list[int] | None = None,
+    sprint_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    # `last` is accepted for API compatibility but no longer affects the query:
+    # bucketing is by sprint end_date (year 2026 by default, or one specific
+    # sprint when sprint_id is set). Sprint linkage is implicit.
     extra_clauses = []
-    params: dict[str, Any] = {"last": last}
+    params: dict[str, Any] = {}
+    if sprint_id is not None:
+        params["sprint_id"] = sprint_id
+    else:
+        params["year"] = 2026
     if project:
         extra_clauses.append("AND f.project = :project")
         params["project"] = project
     _apply_team_filter(extra_clauses, params, team_id, team_ids)
     extra = "\n              ".join(extra_clauses)
+    universe_cte = _build_universe_cte(sprint_id)
 
     sql = text(
         f"""
-        WITH bounds AS (
-            SELECT (date_trunc('week', NOW()) - ((:last - 1) * INTERVAL '1 week'))::date AS week_from
-        ),
+        WITH {universe_cte},
         weeks AS (
             SELECT generate_series(
-                (SELECT week_from FROM bounds),
-                date_trunc('week', NOW())::date,
+                COALESCE((SELECT MIN(week_start) FROM in_universe), date_trunc('week', NOW())::date),
+                LEAST(
+                    COALESCE((SELECT MAX(week_start) FROM in_universe), date_trunc('week', NOW())::date),
+                    date_trunc('week', NOW())::date
+                ),
                 INTERVAL '1 week'
             )::date AS week_start
         ),
         done_issues AS (
             SELECT
-                date_trunc('week', f.resolved_at)::date AS week_start,
-                lower(f.issue_type)                     AS issue_type
+                i2.week_start,
+                lower(f.issue_type) AS issue_type,
+                f.reported_by_customer
             FROM v_issue_facts f
+            JOIN in_universe i2 ON i2.issue_id = f.issue_id
             WHERE f.is_done IS TRUE
-              AND f.resolved_at >= (SELECT week_from FROM bounds)
               AND lower(f.issue_type) IN ('story', 'bug', 'task')
               {extra}
         )
         SELECT
             w.week_start,
             COUNT(*) FILTER (WHERE d.issue_type = 'story') AS stories,
+            COUNT(*) FILTER (WHERE d.issue_type = 'bug' AND d.reported_by_customer IS TRUE) AS customer_bugs,
+            COUNT(*) FILTER (WHERE d.issue_type = 'bug' AND COALESCE(d.reported_by_customer, FALSE) IS FALSE) AS qa_bugs,
             COUNT(*) FILTER (WHERE d.issue_type = 'bug')   AS bugs,
             COUNT(*) FILTER (WHERE d.issue_type = 'task')  AS tasks,
             COUNT(d.issue_type)                            AS total

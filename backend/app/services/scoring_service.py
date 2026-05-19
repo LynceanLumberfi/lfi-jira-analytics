@@ -308,12 +308,22 @@ def _claim_pending(db: Session, limit: int) -> list[tuple[Issue, IssueAIScore]]:
                      SELECT s.id
                        FROM issue_ai_scores s
                        JOIN issues i ON i.id = s.issue_id
+                       LEFT JOIN LATERAL (
+                           SELECT sp.end_date
+                             FROM issue_sprints iss
+                             JOIN sprints sp ON sp.id = iss.sprint_id
+                            WHERE iss.issue_id = i.id AND sp.end_date IS NOT NULL
+                            ORDER BY sp.end_date DESC
+                            LIMIT 1
+                       ) ls ON TRUE
                       WHERE s.scoring_status = 'pending'
                         AND lower(coalesce(i.issue_type, '')) = ANY(:types)
                         AND coalesce(i.summary, '') !~* '^\\[\\s*qa(\\s|\\]|:|-|$)'
                         AND (i.story_points IS NULL OR i.story_points > :min_sp)
                         AND i.status = ANY(:statuses)
-                      ORDER BY i.updated_at DESC NULLS LAST, i.id DESC
+                      ORDER BY ls.end_date DESC NULLS LAST,
+                               i.updated_at DESC NULLS LAST,
+                               i.id DESC
                       LIMIT :limit
                       FOR UPDATE OF s SKIP LOCKED
                  )
@@ -331,13 +341,42 @@ def _claim_pending(db: Session, limit: int) -> list[tuple[Issue, IssueAIScore]]:
     db.commit()
     if not claimed_ids:
         return []
+    # Re-fetch ordered by latest sprint end_date so the in-batch processing
+    # order matches the claim order (newest sprint first).
     rows = db.execute(
-        select(Issue, IssueAIScore)
-        .join(IssueAIScore, IssueAIScore.issue_id == Issue.id)
-        .where(IssueAIScore.id.in_(claimed_ids))
-        .order_by(Issue.updated_at.desc().nulls_last(), Issue.id.desc())
+        text(
+            """
+            SELECT i.id AS issue_id, s.id AS score_id, ls.end_date AS sprint_end
+              FROM issue_ai_scores s
+              JOIN issues i ON i.id = s.issue_id
+              LEFT JOIN LATERAL (
+                  SELECT sp.end_date
+                    FROM issue_sprints iss
+                    JOIN sprints sp ON sp.id = iss.sprint_id
+                   WHERE iss.issue_id = i.id AND sp.end_date IS NOT NULL
+                   ORDER BY sp.end_date DESC
+                   LIMIT 1
+              ) ls ON TRUE
+             WHERE s.id = ANY(:ids)
+             ORDER BY ls.end_date DESC NULLS LAST,
+                      i.updated_at DESC NULLS LAST,
+                      i.id DESC
+            """
+        ),
+        {"ids": claimed_ids},
     ).all()
-    return [(issue, score) for issue, score in rows]
+    ordered_score_ids = [r.score_id for r in rows]
+    issues_by_id = {
+        i.id: i for i in db.execute(select(Issue).where(Issue.id.in_([r.issue_id for r in rows]))).scalars()
+    }
+    scores_by_id = {
+        s.id: s for s in db.execute(select(IssueAIScore).where(IssueAIScore.id.in_(ordered_score_ids))).scalars()
+    }
+    return [
+        (issues_by_id[r.issue_id], scores_by_id[r.score_id])
+        for r in rows
+        if r.issue_id in issues_by_id and r.score_id in scores_by_id
+    ]
 
 
 def _release_claims(db: Session, score_rows: list[IssueAIScore]) -> None:

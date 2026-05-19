@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -39,6 +41,8 @@ def list_teams(db: Session = Depends(get_db)) -> list[TeamOut]:
 def list_sprints(
     state: str | None = Query(None, description="active | closed | future"),
     team_id: int | None = Query(None),
+    end_from: date | None = Query(None, description="end_date >= this (inclusive)"),
+    end_to: date | None = Query(None, description="end_date <= this (inclusive)"),
     db: Session = Depends(get_db),
 ) -> list[SprintOut]:
     q = select(Sprint)
@@ -52,6 +56,11 @@ def list_sprints(
                 .where(Issue.team_id == team_id)
             )
         )
+    if end_from is not None:
+        q = q.where(Sprint.end_date >= end_from)
+    if end_to is not None:
+        # end_date is a datetime; include the entire end_to day
+        q = q.where(Sprint.end_date < end_to + timedelta(days=1))
     q = q.order_by(Sprint.jira_sprint_id.desc())
     rows = db.execute(q).scalars().all()
     return [SprintOut.model_validate(r) for r in rows]

@@ -15,6 +15,7 @@ import {
   ChevronDown,
   FlaskConical,
   Upload,
+  ListChecks,
 } from "lucide-react";
 import { LumberLogo } from "../ui/Logos";
 import { Avatar } from "../ui/Avatar";
@@ -185,6 +186,7 @@ export function Sidebar() {
         <NavItem to="/integrations/staging" label="Sync Review" icon={ClipboardCheck} badge={pendingCount} />
         <NavItem to="/integrations/history" label="Sync history" icon={History} />
         <NavItem to="/integrations/failed" label="Failed records" icon={AlertTriangle} />
+        <NavItem to="/admin/tickets" label="Tickets" icon={ListChecks} />
         <NavItem to="/admin/test-coverage" label="Test Coverage" icon={Upload} />
 
         <div className="my-3 border-t border-border" />

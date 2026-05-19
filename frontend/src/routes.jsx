@@ -27,6 +27,7 @@ import { TestAutomationLayout } from "./pages/workspace/TestAutomationLayout";
 import { CoverageOverview } from "./pages/workspace/CoverageOverview";
 import { ExecutionPlaceholder } from "./pages/workspace/ExecutionPlaceholder";
 import { TestCoverageUpload } from "./pages/admin/TestCoverageUpload";
+import { TicketsGrid } from "./pages/admin/TicketsGrid";
 
 export const router = createBrowserRouter([
   {
@@ -98,6 +99,7 @@ export const router = createBrowserRouter([
           },
         ],
       },
+      { path: "/admin/tickets", element: <TicketsGrid /> },
       { path: "/admin/test-coverage", element: <TestCoverageUpload /> },
       { path: "*", element: <Navigate to="/integrations" replace /> },
     ],

@@ -11,6 +11,14 @@ function formatWeekLabel(weekStart) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function formatWeekRange(weekStart) {
+  const [year, month, day] = weekStart.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  const end = new Date(year, month - 1, day + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 function nullableData(rows, key, transform) {
   return rows.map((r) => (r[key] == null ? null : transform ? transform(r[key]) : r[key]));
 }
@@ -70,9 +78,9 @@ export function StoryTrendsChart({ data = [], height = 280 }) {
         const idx = params[0]?.dataIndex ?? 0;
         const row = data[idx];
         if (!row) return "";
-        const week = formatWeekLabel(row.week_start);
+        const week = formatWeekRange(row.week_start);
         const lines = [
-          `<div style="font-weight:600;margin-bottom:4px">Week of ${week}</div>`,
+          `<div style="font-weight:600;margin-bottom:4px">${week}</div>`,
         ];
         for (const p of params) {
           if (p.value == null) continue;

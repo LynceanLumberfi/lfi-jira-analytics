@@ -201,6 +201,7 @@ def promote_approved(
     across multiple HTTP requests.
     """
     from app.models.sync_phase import SyncPhase
+    from app.services.jira_client import JiraClient
     from app.services.phase_service import close_phase, open_phase, tick
     from app.services.sync_service import persist_issue
 
@@ -240,52 +241,59 @@ def promote_approved(
     promoted = 0
     failed = 0
     processed = 0
+    # Per-run cache so we hit /rest/agile/1.0/sprint/{id} at most once per
+    # unique sprint, no matter how many promoted issues reference it.
+    sprint_cache: dict[int, dict[str, Any]] = {}
 
     try:
-        for row in approved:
-            staging_id = row.id
-            jira_key = row.jira_key
-            row_sync_state_id = row.sync_state_id
-            entity_metrics: dict[str, int] = {}
-            try:
-                entity_metrics = persist_issue(db, row.raw_payload, settings)
-                db.commit()
-                row.review_status = StagingIssue.STATUS_PROMOTED
-                row.promoted_at = datetime.now(timezone.utc)
-                db.commit()
-                promoted += 1
-            except Exception as exc:
-                logger.exception(
-                    "promote failed staging_id=%s jira_key=%s", staging_id, jira_key
-                )
-                db.rollback()
-                row = db.get(StagingIssue, staging_id)
-                if row:
-                    row.review_status = StagingIssue.STATUS_FAILED
-                    err_snippet = traceback.format_exc()[-400:]
-                    row.review_notes = (
-                        (row.review_notes or "") + f"\n[promote error: {err_snippet}]"
-                    ).strip()
+        with JiraClient(settings) as jira_client:
+            for row in approved:
+                staging_id = row.id
+                jira_key = row.jira_key
+                row_sync_state_id = row.sync_state_id
+                entity_metrics: dict[str, int] = {}
+                try:
+                    entity_metrics = persist_issue(
+                        db, row.raw_payload, settings,
+                        jira_client=jira_client, sprint_cache=sprint_cache,
+                    )
                     db.commit()
-                from app.services.failure_service import record_failure
-                record_failure(
-                    db,
-                    phase="promote",
-                    entity="issue",
-                    title=f"Promote failed: {jira_key}",
-                    exc=exc,
-                    sync_state_id=row_sync_state_id,
-                    staging_id=staging_id,
-                    jira_ref=jira_key,
-                )
-                failed += 1
+                    row.review_status = StagingIssue.STATUS_PROMOTED
+                    row.promoted_at = datetime.now(timezone.utc)
+                    db.commit()
+                    promoted += 1
+                except Exception as exc:
+                    logger.exception(
+                        "promote failed staging_id=%s jira_key=%s", staging_id, jira_key
+                    )
+                    db.rollback()
+                    row = db.get(StagingIssue, staging_id)
+                    if row:
+                        row.review_status = StagingIssue.STATUS_FAILED
+                        err_snippet = traceback.format_exc()[-400:]
+                        row.review_notes = (
+                            (row.review_notes or "") + f"\n[promote error: {err_snippet}]"
+                        ).strip()
+                        db.commit()
+                    from app.services.failure_service import record_failure
+                    record_failure(
+                        db,
+                        phase="promote",
+                        entity="issue",
+                        title=f"Promote failed: {jira_key}",
+                        exc=exc,
+                        sync_state_id=row_sync_state_id,
+                        staging_id=staging_id,
+                        jira_ref=jira_key,
+                    )
+                    failed += 1
 
-            processed += 1
-            if phase is not None:
-                tick(db, phase, processed=processed)
-                for phase_name, sibling in extraction_phases.items():
-                    extraction_counts[phase_name] += entity_metrics.get(phase_name, 0)
-                    tick(db, sibling, processed=processed)
+                processed += 1
+                if phase is not None:
+                    tick(db, phase, processed=processed)
+                    for phase_name, sibling in extraction_phases.items():
+                        extraction_counts[phase_name] += entity_metrics.get(phase_name, 0)
+                        tick(db, sibling, processed=processed)
     finally:
         if phase is not None:
             close_phase(
