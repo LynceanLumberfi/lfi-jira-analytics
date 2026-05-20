@@ -1,21 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import { cadenceLabel, cadenceTickLabel } from "../../lib/cadence";
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function formatWeekLabel(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function formatWeekRange(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  const start = new Date(year, month - 1, day);
-  const end = new Date(year, month - 1, day + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 const SERIES_POINTS = "Story Points";
@@ -48,7 +36,7 @@ export function ResourceTrendsChart({ data = [], height = 280 }) {
       bgElev: cssVar("--bg-elev"),
     };
 
-    const labels = data.map((r) => formatWeekLabel(r.week_start));
+    const labels = data.map((r) => cadenceTickLabel(r.cadence_start, r.cadence_end));
     const points = data.map((r) => (r.story_points != null ? +r.story_points.toFixed(1) : null));
     const devs = data.map((r) => r.active_resources ?? null);
 
@@ -82,8 +70,12 @@ export function ResourceTrendsChart({ data = [], height = 280 }) {
               ? (row.story_points / row.active_resources).toFixed(1)
               : "—";
           const pts = Math.round(row.story_points ?? 0);
+          const sprintLine =
+            row.sprint_ids && row.sprint_ids.length > 0
+              ? `<div style="margin-top:4px;padding-top:4px;border-top:1px dashed ${colors.border};color:${colors.ink3};font-size:11px">Sprints: ${row.sprint_ids.join(", ")}</div>`
+              : "";
           return (
-            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${cadenceLabel(row.cadence_start, row.cadence_end)}</div>` +
             `<div style="display:flex;gap:8px;justify-content:space-between">` +
               `<span>${params[0]?.marker}${SERIES_POINTS}</span>` +
               `<span style="font-weight:600">${pts} · ${row.story_count} stories</span></div>` +
@@ -92,7 +84,8 @@ export function ResourceTrendsChart({ data = [], height = 280 }) {
               `<span style="font-weight:600">${row.active_resources ?? "—"}</span></div>` +
             `<div style="display:flex;gap:8px;justify-content:space-between">` +
               `<span style="padding-left:14px">Pts / Dev</span>` +
-              `<span style="font-weight:600">${ppr}</span></div>`
+              `<span style="font-weight:600">${ppr}</span></div>` +
+            sprintLine
           );
         },
       },
@@ -149,7 +142,7 @@ export function ResourceTrendsChart({ data = [], height = 280 }) {
         className="flex items-center justify-center rounded border border-dashed border-border bg-bg-sunken text-[13px] text-ink-3"
         style={{ height }}
       >
-        No completed weeks in this period
+        No closed sprints in this period
       </div>
     );
   }

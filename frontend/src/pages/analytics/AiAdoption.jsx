@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getAnalyticsAiAdoption, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
+import { cadenceLabel } from "../../lib/cadence";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
 import { StoriesTable } from "../../components/ui/StoriesTable";
@@ -11,24 +12,6 @@ import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 function pct(v) {
   if (v == null) return "—";
   return `${Math.round(v * 100)}%`;
-}
-
-function weekLabel(weekStart) {
-  if (!weekStart) return "";
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const start = new Date(y, m - 1, d);
-  const end = new Date(y, m - 1, d + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function currentIsoWeekMonday() {
-  const dt = new Date();
-  const day = dt.getDay() || 7;
-  dt.setDate(dt.getDate() - day + 1);
-  dt.setHours(0, 0, 0, 0);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function safeRate(num, den) {
@@ -53,31 +36,26 @@ export function AiAdoption() {
     queryFn: () => getAnalyticsAiAdoption({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
-  const trends = payload?.story_trends;
-  const teamRows = payload?.week_team_breakdown;
-  const weekIssues = payload?.week_stories;
+  const trends = payload?.story_trends ?? [];
+  const teamRows = payload?.cadence_team_breakdown ?? [];
+  const cadenceStories = payload?.cadence_stories;
+  const hasCadence = payload?.cadence_end != null;
 
-  const currentWeek = currentIsoWeekMonday();
-  const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
-    : [];
-  const lastWeek = completedWeeks[0] ?? null;
-  const prevWeek = completedWeeks[1] ?? null;
+  const currentRow = trends.length > 0 ? trends[trends.length - 1] : null;
+  const prevRow = trends.length > 1 ? trends[trends.length - 2] : null;
 
-  const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
-  const prevStoryRate = prevWeek ? safeRate(prevWeek.skill_count, prevWeek.story_count) : null;
+  const storyRate = currentRow ? safeRate(currentRow.skill_count, currentRow.story_count) : null;
+  const prevStoryRate = prevRow ? safeRate(prevRow.skill_count, prevRow.story_count) : null;
 
-  const devRate = lastWeek
-    ? safeRate(lastWeek.skill_adopters, lastWeek.active_delivered_devs)
+  const devRate = currentRow
+    ? safeRate(currentRow.skill_adopters, currentRow.active_delivered_devs)
     : null;
-  const prevDevRate = prevWeek
-    ? safeRate(prevWeek.skill_adopters, prevWeek.active_delivered_devs)
+  const prevDevRate = prevRow
+    ? safeRate(prevRow.skill_adopters, prevRow.active_delivered_devs)
     : null;
 
-  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
-
-  const prevSub = prevWeek
-    ? weekLabel(prevWeek.week_start)
+  const prevSub = prevRow
+    ? cadenceLabel(prevRow.cadence_start, prevRow.cadence_end)
     : undefined;
 
   const storyDelta = computeDelta({
@@ -85,7 +63,7 @@ export function AiAdoption() {
     prev: prevStoryRate,
     higherIsBetter: true,
     fmtPrev: prevStoryRate != null ? pct(prevStoryRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_count}/${prevWeek.story_count} stories` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.skill_count}/${prevRow.story_count} stories` : prevSub,
   });
 
   const devDelta = computeDelta({
@@ -93,10 +71,10 @@ export function AiAdoption() {
     prev: prevDevRate,
     higherIsBetter: true,
     fmtPrev: prevDevRate != null ? pct(prevDevRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_adopters}/${prevWeek.active_delivered_devs} devs` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.skill_adopters}/${prevRow.active_delivered_devs} devs` : prevSub,
   });
 
-  const topStoryTeam = teamRows?.length
+  const topStoryTeam = teamRows.length
     ? teamRows
         .filter((r) => r.issue_count > 0)
         .reduce((best, r) =>
@@ -105,7 +83,7 @@ export function AiAdoption() {
         )
     : null;
 
-  const topDevTeam = teamRows?.length
+  const topDevTeam = teamRows.length
     ? teamRows
         .filter((r) => r.active_devs > 0)
         .reduce((best, r) =>
@@ -114,14 +92,18 @@ export function AiAdoption() {
         )
     : null;
 
+  const currentLabel = hasCadence
+    ? cadenceLabel(payload.cadence_start, payload.cadence_end)
+    : "";
+
   return (
     <div className="flex flex-col gap-6">
       <header>
         <h2 className="text-[18px] font-semibold text-ink">AI Adoption</h2>
         <p className="mt-1 text-[13px] text-ink-3">
           Skill adoption across delivered Stories and the engineers shipping them.
-          {lastWeek && (
-            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+          {hasCadence && (
+            <> Sprint cadence <span className="font-medium text-ink-2">{currentLabel}</span>.</>
           )}
         </p>
       </header>
@@ -130,9 +112,9 @@ export function AiAdoption() {
         <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
           <Loader2 size={14} className="animate-spin" /> Loading…
         </div>
-      ) : !lastWeek ? (
+      ) : !hasCadence ? (
         <div className="rounded-lg border border-dashed border-border bg-bg-sunken py-16 text-center text-[13px] text-ink-3">
-          No completed Stories in the last 12 weeks.
+          No synchronized sprint cadence has closed yet.
         </div>
       ) : (
         <>
@@ -141,8 +123,8 @@ export function AiAdoption() {
               label="Stories delivered with Skill"
               value={pct(storyRate)}
               sub={
-                lastWeek.story_count > 0
-                  ? `${lastWeek.skill_count} of ${lastWeek.story_count} stories`
+                currentRow?.story_count > 0
+                  ? `${currentRow.skill_count} of ${currentRow.story_count} stories`
                   : "no stories delivered"
               }
               tone="ok"
@@ -152,8 +134,8 @@ export function AiAdoption() {
               label="Developers using Skill"
               value={pct(devRate)}
               sub={
-                lastWeek.active_delivered_devs > 0
-                  ? `${lastWeek.skill_adopters} of ${lastWeek.active_delivered_devs} active devs`
+                currentRow?.active_delivered_devs > 0
+                  ? `${currentRow.skill_adopters} of ${currentRow.active_delivered_devs} active devs`
                   : "no active devs"
               }
               tone="info"
@@ -201,27 +183,27 @@ export function AiAdoption() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Skill adoption — last 12 weeks</CardTitle>
+              <CardTitle>Skill adoption — last 12 cadences</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                Completed weeks only · in-progress week excluded
+                Synchronized FS / BFX / HR sprints only
               </span>
             </CardHeader>
             <CardBody pad="lg">
-              <SkillAdoptionTrendsChart data={completedTrends} />
+              <SkillAdoptionTrendsChart data={trends} />
             </CardBody>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Stories delivered — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Stories delivered — {currentLabel}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                {weekIssues ? `${weekIssues.total} stories` : ""}
+                {cadenceStories ? `${cadenceStories.total} stories` : ""}
               </span>
             </CardHeader>
             <CardBody pad="none">
               <StoriesTable
-                items={weekIssues?.items ?? []}
-                isLoading={!weekIssues}
+                items={cadenceStories?.items ?? []}
+                isLoading={!cadenceStories}
                 showTeamFilter
               />
             </CardBody>

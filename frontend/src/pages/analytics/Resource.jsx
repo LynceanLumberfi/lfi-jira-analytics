@@ -2,32 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getAnalyticsResource, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
+import { cadenceLabel } from "../../lib/cadence";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { ResourceTrendsChart } from "../../components/charts/ResourceTrendsChart";
 import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 import { StoriesTable } from "../../components/ui/StoriesTable";
+import { Pill } from "../../components/ui/Pill";
 
 function fmt(v, dp = 0) {
   if (v == null) return "—";
   return dp === 0 ? String(Math.round(v)) : v.toFixed(dp);
-}
-
-function weekLabel(weekStart) {
-  if (!weekStart) return "";
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const start = new Date(y, m - 1, d);
-  const end = new Date(y, m - 1, d + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function currentIsoWeekMonday() {
-  const dt = new Date();
-  const day = dt.getDay() || 7;
-  dt.setDate(dt.getDate() - day + 1);
-  dt.setHours(0, 0, 0, 0);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function safeRate(num, den) {
@@ -52,36 +36,40 @@ export function Resource() {
     queryFn: () => getAnalyticsResource({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
-  const trends = payload?.story_trends;
-  const teamRows = payload?.week_team_breakdown;
-  const weekStories = payload?.week_stories;
+  const trends = payload?.story_trends ?? [];
+  const teamRows = payload?.cadence_team_breakdown ?? [];
+  const devRows = payload?.cadence_assignee_breakdown ?? [];
+  const inactiveDevRows = payload?.prev_only_assignees ?? [];
+  const prevAssigneeIds = payload?.prev_cadence_assignee_ids ?? [];
+  const prevAssigneeIdSet = new Set(prevAssigneeIds);
+  // Only flag "Reactive" when we actually have prev-cadence data to compare
+  // against — otherwise every current dev would falsely look new.
+  const hasPrevCadence = prevAssigneeIds.length > 0;
+  const cadenceStories = payload?.cadence_stories;
+  const hasCadence = payload?.cadence_end != null;
 
-  const currentWeek = currentIsoWeekMonday();
-  const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
-    : [];
-  const lastWeek = completedWeeks[0] ?? null;
-  const prevWeek = completedWeeks[1] ?? null;
+  const currentRow = trends.length > 0 ? trends[trends.length - 1] : null;
+  const prevRow = trends.length > 1 ? trends[trends.length - 2] : null;
 
-  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
-
-  const storyPoints = lastWeek?.story_points ?? null;
-  const prevStoryPoints = prevWeek?.story_points ?? null;
-  const activeResources = lastWeek?.active_resources ?? null;
-  const prevActiveResources = prevWeek?.active_resources ?? null;
+  const storyPoints = currentRow?.story_points ?? null;
+  const prevStoryPoints = prevRow?.story_points ?? null;
+  const activeResources = currentRow?.active_resources ?? null;
+  const prevActiveResources = prevRow?.active_resources ?? null;
   const ptsPerResource = safeRate(storyPoints, activeResources);
-  const prevPtsPerResource = safeRate(prevWeek?.story_points ?? null, prevWeek?.active_resources ?? null);
-  const hoursPerPoint = lastWeek?.hours_per_point ?? null;
-  const prevHoursPerPoint = prevWeek?.hours_per_point ?? null;
+  const prevPtsPerResource = safeRate(prevStoryPoints, prevActiveResources);
+  const hoursPerPoint = currentRow?.hours_per_point ?? null;
+  const prevHoursPerPoint = prevRow?.hours_per_point ?? null;
 
-  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
+  const prevSub = prevRow
+    ? cadenceLabel(prevRow.cadence_start, prevRow.cadence_end)
+    : undefined;
 
   const pointsDelta = computeDelta({
     curr: storyPoints,
     prev: prevStoryPoints,
     higherIsBetter: true,
     fmtPrev: prevStoryPoints != null ? fmt(prevStoryPoints) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${fmt(prevStoryPoints)} pts` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${fmt(prevStoryPoints)} pts` : prevSub,
   });
 
   const devsDelta = computeDelta({
@@ -105,12 +93,25 @@ export function Resource() {
     prev: prevHoursPerPoint,
     higherIsBetter: false,
     fmtPrev: prevHoursPerPoint != null ? `${prevHoursPerPoint.toFixed(1)}h` : undefined,
-    prevSub: prevWeek
-      ? `${prevSub} · ${prevWeek.hour_logged_count} stories w/ hours`
+    prevSub: prevRow
+      ? `${prevSub} · ${prevRow.hour_logged_count} stories w/ hours`
       : prevSub,
   });
 
   const activeTeamRows = (teamRows || []).filter((r) => r.issue_count > 0);
+  const activeDevRows = devRows
+    .filter((r) => r.issue_count > 0)
+    .sort((a, b) => (b.total_story_points ?? 0) - (a.total_story_points ?? 0));
+  const sortedInactiveDevs = [...inactiveDevRows].sort(
+    (a, b) => (b.total_story_points ?? 0) - (a.total_story_points ?? 0),
+  );
+  const reactiveCount = hasPrevCadence
+    ? activeDevRows.filter((r) => r.assignee_id != null && !prevAssigneeIdSet.has(r.assignee_id)).length
+    : 0;
+
+  const currentLabel = hasCadence
+    ? cadenceLabel(payload.cadence_start, payload.cadence_end)
+    : "";
 
   return (
     <div className="flex flex-col gap-6">
@@ -118,8 +119,8 @@ export function Resource() {
         <h2 className="text-[18px] font-semibold text-ink">Resource</h2>
         <p className="mt-1 text-[13px] text-ink-3">
           Capacity, velocity, and points-per-resource breakdown across teams.
-          {lastWeek && (
-            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+          {hasCadence && (
+            <> Sprint cadence <span className="font-medium text-ink-2">{currentLabel}</span>.</>
           )}
         </p>
       </header>
@@ -128,9 +129,9 @@ export function Resource() {
         <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
           <Loader2 size={14} className="animate-spin" /> Loading…
         </div>
-      ) : !lastWeek ? (
+      ) : !hasCadence ? (
         <div className="rounded-lg border border-dashed border-border bg-bg-sunken py-16 text-center text-[13px] text-ink-3">
-          No completed Stories in the last 12 weeks.
+          No synchronized sprint cadence has closed yet.
         </div>
       ) : (
         <>
@@ -138,7 +139,7 @@ export function Resource() {
             <KpiHero
               label="Story Points Delivered"
               value={storyPoints != null ? fmt(storyPoints) : "—"}
-              sub={lastWeek.story_count > 0 ? `${lastWeek.story_count} stories` : "no stories"}
+              sub={currentRow?.story_count > 0 ? `${currentRow.story_count} stories` : "no stories"}
               tone="accent"
               delta={pointsDelta}
             />
@@ -164,8 +165,8 @@ export function Resource() {
               label="Hours per Point"
               value={hoursPerPoint != null ? `${hoursPerPoint.toFixed(1)}h` : "—"}
               sub={
-                lastWeek.hour_logged_count > 0
-                  ? `${lastWeek.hour_logged_count} stories with hours`
+                currentRow?.hour_logged_count > 0
+                  ? `${currentRow.hour_logged_count} stories with hours`
                   : "no time data"
               }
               tone="warn"
@@ -175,20 +176,20 @@ export function Resource() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Resource trends — last 12 weeks</CardTitle>
+              <CardTitle>Resource trends — last 12 cadences</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                Completed weeks only · in-progress week excluded
+                Synchronized FS / BFX / HR sprints only
               </span>
             </CardHeader>
             <CardBody pad="lg">
-              <ResourceTrendsChart data={completedTrends} />
+              <ResourceTrendsChart data={trends} />
             </CardBody>
           </Card>
 
           {activeTeamRows.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Team breakdown — {weekLabel(lastWeek.week_start)}</CardTitle>
+                <CardTitle>Team breakdown — {currentLabel}</CardTitle>
                 <span className="text-[12.5px] text-ink-3">Sprint stories only</span>
               </CardHeader>
               <CardBody pad="none">
@@ -234,17 +235,107 @@ export function Resource() {
             </Card>
           )}
 
+          {(activeDevRows.length > 0 || sortedInactiveDevs.length > 0) && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Resource breakdown — {currentLabel}</CardTitle>
+                <span className="text-[12.5px] text-ink-3">
+                  {activeDevRows.length} active
+                  {reactiveCount > 0 && ` · ${reactiveCount} reactive`}
+                  {sortedInactiveDevs.length > 0 && ` · ${sortedInactiveDevs.length} inactive`}
+                </span>
+              </CardHeader>
+              <CardBody pad="none">
+                <table className="w-full border-collapse text-sm">
+                  <thead className="bg-bg-sunken text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Developer</th>
+                      <th className="px-4 py-2 text-left">Team</th>
+                      <th className="px-4 py-2 text-right">Stories</th>
+                      <th className="px-4 py-2 text-right">Points</th>
+                      <th className="px-4 py-2 text-right">Avg Pts / Story</th>
+                      <th className="px-4 py-2 text-right">Avg Hours / Story</th>
+                      <th className="px-4 py-2 text-left">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeDevRows.map((r) => {
+                      const isReactive =
+                        hasPrevCadence && r.assignee_id != null && !prevAssigneeIdSet.has(r.assignee_id);
+                      return (
+                        <tr
+                          key={`a-${r.assignee_id ?? r.assignee_name}`}
+                          className="border-t border-border hover:bg-bg-sunken/50"
+                        >
+                          <td className="px-4 py-3 text-[13px] font-medium text-ink">
+                            {r.assignee_name ?? "—"}
+                          </td>
+                          <td className="px-4 py-3 text-[12.5px] text-ink-3">
+                            {r.team_name ?? "—"}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
+                            {r.issue_count}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
+                            {r.total_story_points != null ? fmt(r.total_story_points, 1) : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
+                            {r.avg_story_points != null ? fmt(r.avg_story_points, 1) : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
+                            {r.avg_spent_hours != null ? `${fmt(r.avg_spent_hours, 1)}h` : "—"}
+                          </td>
+                          <td className="px-4 py-3">
+                            {isReactive && <Pill tone="ok">Reactive</Pill>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {sortedInactiveDevs.map((r) => (
+                      <tr
+                        key={`i-${r.assignee_id ?? r.assignee_name}`}
+                        className="border-t border-border bg-bg-sunken/30 hover:bg-bg-sunken/60"
+                      >
+                        <td className="px-4 py-3 text-[13px] font-medium text-ink-3">
+                          {r.assignee_name ?? "—"}
+                        </td>
+                        <td className="px-4 py-3 text-[12.5px] text-ink-4">
+                          {r.team_name ?? "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-4">
+                          {r.issue_count}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-4">
+                          {r.total_story_points != null ? fmt(r.total_story_points, 1) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-4">
+                          {r.avg_story_points != null ? fmt(r.avg_story_points, 1) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-4">
+                          {r.avg_spent_hours != null ? `${fmt(r.avg_spent_hours, 1)}h` : "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Pill tone="warn">Inactive</Pill>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardBody>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
-              <CardTitle>Stories delivered — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Stories delivered — {currentLabel}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                {weekStories ? `${weekStories.total} stories` : ""}
+                {cadenceStories ? `${cadenceStories.total} stories` : ""}
               </span>
             </CardHeader>
             <CardBody pad="none">
               <StoriesTable
-                items={weekStories?.items ?? []}
-                isLoading={!weekStories}
+                items={cadenceStories?.items ?? []}
+                isLoading={!cadenceStories}
                 showTeamFilter
               />
             </CardBody>

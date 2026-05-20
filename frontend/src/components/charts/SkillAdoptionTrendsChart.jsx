@@ -1,22 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import { cadenceLabel, cadenceTickLabel } from "../../lib/cadence";
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function formatWeekLabel(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  const d = new Date(year, month - 1, day);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function formatWeekRange(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  const start = new Date(year, month - 1, day);
-  const end = new Date(year, month - 1, day + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function safeRate(num, den) {
@@ -45,7 +32,7 @@ export function SkillAdoptionTrendsChart({ data = [], height = 280 }) {
   const option = useMemo(() => {
     if (!data.length) return null;
 
-    const labels = data.map((r) => formatWeekLabel(r.week_start));
+    const labels = data.map((r) => cadenceTickLabel(r.cadence_start, r.cadence_end));
     const storyRates = data.map((r) => {
       const v = safeRate(r.skill_count, r.story_count);
       return v == null ? null : +(v * 100).toFixed(1);
@@ -92,7 +79,7 @@ export function SkillAdoptionTrendsChart({ data = [], height = 280 }) {
           const row = data[idx];
           if (!row) return "";
           const lines = [
-            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>`,
+            `<div style="font-weight:600;margin-bottom:4px">${cadenceLabel(row.cadence_start, row.cadence_end)}</div>`,
           ];
           for (const p of params) {
             if (p.value == null) continue;
@@ -170,7 +157,7 @@ export function SkillAdoptionTrendsChart({ data = [], height = 280 }) {
         className="flex items-center justify-center rounded border border-dashed border-border bg-bg-sunken text-[13px] text-ink-3"
         style={{ height }}
       >
-        No completed weeks in this period
+        No closed sprints in this period
       </div>
     );
   }

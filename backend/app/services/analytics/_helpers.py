@@ -60,6 +60,55 @@ def excluded_team_ids(db: Session) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+def previous_sprint_id(
+    db: Session,
+    sprint_id: int,
+    team_ids: list[int] | None = None,
+) -> int | None:
+    """The closed sprint that ended immediately before `sprint_id`.
+
+    Restricted to `state = 'closed'` because Jira keeps `future` sprints around
+    with placeholder end_dates — without the filter we'd point at an upcoming
+    sprint that just happens to share a date. When `team_ids` is provided,
+    further restrict to sprints that contain ≥1 issue from one of those teams.
+    Returns None if no earlier closed sprint exists.
+    """
+    if team_ids:
+        sql = text(
+            """
+            SELECT s.id
+            FROM sprints s
+            WHERE s.state = 'closed'
+              AND s.end_date IS NOT NULL
+              AND s.end_date < (SELECT end_date FROM sprints WHERE id = :sprint_id)
+              AND EXISTS (
+                  SELECT 1
+                  FROM issue_sprints iss
+                  JOIN issues i ON i.id = iss.issue_id
+                  WHERE iss.sprint_id = s.id
+                    AND i.team_id = ANY(:team_ids)
+              )
+            ORDER BY s.end_date DESC
+            LIMIT 1
+            """
+        )
+        row = db.execute(sql, {"sprint_id": sprint_id, "team_ids": team_ids}).first()
+    else:
+        sql = text(
+            """
+            SELECT id
+            FROM sprints
+            WHERE state = 'closed'
+              AND end_date IS NOT NULL
+              AND end_date < (SELECT end_date FROM sprints WHERE id = :sprint_id)
+            ORDER BY end_date DESC
+            LIMIT 1
+            """
+        )
+        row = db.execute(sql, {"sprint_id": sprint_id}).first()
+    return int(row[0]) if row else None
+
+
 def sprint_ids_ending_in_week(db: Session, week_start: date) -> list[int]:
     """Sprint IDs whose end_date falls inside the Mon–Sun span of week_start."""
     sql = text(
@@ -74,3 +123,224 @@ def sprint_ids_ending_in_week(db: Session, week_start: date) -> list[int]:
     start_dt, end_dt = week_bounds(week_start)
     rows = db.execute(sql, {"start_dt": start_dt, "end_dt": end_dt}).all()
     return [int(r[0]) for r in rows]
+
+
+# ---- Sprint cadence helpers (Resource tab) --------------------------------
+#
+# The three featured teams (FS/BFX/HR) run on a synchronized cadence — for a
+# given period each team has one closed sprint that shares the same start_date
+# and end_date. Sprint names are hyphen-prefixed (e.g. "FS-503"); we identify
+# the cadence by grouping closed sprints on end_date and requiring all three
+# prefixes to be present.
+
+TEAM_SPRINT_PREFIXES: tuple[str, ...] = ("FS", "BFX", "HR")
+
+
+def _cadence_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "start_date": row.start_date,
+        "end_date": row.end_date,
+        "sprint_ids": [int(x) for x in row.sprint_ids],
+    }
+
+
+def latest_closed_cadence(db: Session) -> dict[str, Any] | None:
+    """Latest end_date where all 3 prefix-teams have a closed sprint that day."""
+    sql = text(
+        """
+        SELECT end_date::date                   AS end_date,
+               MIN(start_date)::date            AS start_date,
+               array_agg(id ORDER BY id)        AS sprint_ids
+        FROM sprints
+        WHERE state = 'closed'
+          AND end_date IS NOT NULL
+          AND split_part(name, '-', 1) = ANY(:prefixes)
+        GROUP BY end_date::date
+        HAVING COUNT(DISTINCT split_part(name, '-', 1)) = :prefix_count
+        ORDER BY end_date::date DESC
+        LIMIT 1
+        """
+    )
+    row = db.execute(
+        sql,
+        {
+            "prefixes": list(TEAM_SPRINT_PREFIXES),
+            "prefix_count": len(TEAM_SPRINT_PREFIXES),
+        },
+    ).first()
+    return _cadence_row_to_dict(row) if row else None
+
+
+def previous_cadence(db: Session, end_date: date) -> dict[str, Any] | None:
+    """Cadence immediately preceding the one ending on `end_date`."""
+    sql = text(
+        """
+        SELECT end_date::date                   AS end_date,
+               MIN(start_date)::date            AS start_date,
+               array_agg(id ORDER BY id)        AS sprint_ids
+        FROM sprints
+        WHERE state = 'closed'
+          AND end_date IS NOT NULL
+          AND end_date::date < :end_date
+          AND split_part(name, '-', 1) = ANY(:prefixes)
+        GROUP BY end_date::date
+        HAVING COUNT(DISTINCT split_part(name, '-', 1)) = :prefix_count
+        ORDER BY end_date::date DESC
+        LIMIT 1
+        """
+    )
+    row = db.execute(
+        sql,
+        {
+            "end_date": end_date,
+            "prefixes": list(TEAM_SPRINT_PREFIXES),
+            "prefix_count": len(TEAM_SPRINT_PREFIXES),
+        },
+    ).first()
+    return _cadence_row_to_dict(row) if row else None
+
+
+def recent_cadences(db: Session, limit: int = 12) -> list[dict[str, Any]]:
+    """Last N synchronized cadences, oldest first (chart x-axis order)."""
+    sql = text(
+        """
+        SELECT end_date::date                   AS end_date,
+               MIN(start_date)::date            AS start_date,
+               array_agg(id ORDER BY id)        AS sprint_ids
+        FROM sprints
+        WHERE state = 'closed'
+          AND end_date IS NOT NULL
+          AND split_part(name, '-', 1) = ANY(:prefixes)
+        GROUP BY end_date::date
+        HAVING COUNT(DISTINCT split_part(name, '-', 1)) = :prefix_count
+        ORDER BY end_date::date DESC
+        LIMIT :limit
+        """
+    )
+    rows = db.execute(
+        sql,
+        {
+            "prefixes": list(TEAM_SPRINT_PREFIXES),
+            "prefix_count": len(TEAM_SPRINT_PREFIXES),
+            "limit": limit,
+        },
+    ).all()
+    return [_cadence_row_to_dict(r) for r in reversed(rows)]
+
+
+# Team-drilldown variants — operate on a single team's sprint chain, modeling
+# each sprint as a one-element cadence so the rest of the pipeline is uniform.
+
+
+def latest_closed_sprint_cadence_for_team(
+    db: Session, team_id: int
+) -> dict[str, Any] | None:
+    sql = text(
+        """
+        SELECT s.id,
+               s.start_date::date AS start_date,
+               s.end_date::date   AS end_date
+        FROM sprints s
+        WHERE s.state = 'closed'
+          AND s.end_date IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM issue_sprints iss
+              JOIN issues i ON i.id = iss.issue_id
+              WHERE iss.sprint_id = s.id AND i.team_id = :team_id
+          )
+        ORDER BY s.end_date DESC
+        LIMIT 1
+        """
+    )
+    row = db.execute(sql, {"team_id": team_id}).first()
+    if row is None:
+        return None
+    return {
+        "start_date": row.start_date,
+        "end_date": row.end_date,
+        "sprint_ids": [int(row.id)],
+    }
+
+
+def recent_sprint_cadences_for_team(
+    db: Session, team_id: int, limit: int = 12
+) -> list[dict[str, Any]]:
+    sql = text(
+        """
+        SELECT s.id,
+               s.start_date::date AS start_date,
+               s.end_date::date   AS end_date
+        FROM sprints s
+        WHERE s.state = 'closed'
+          AND s.end_date IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM issue_sprints iss
+              JOIN issues i ON i.id = iss.issue_id
+              WHERE iss.sprint_id = s.id AND i.team_id = :team_id
+          )
+        ORDER BY s.end_date DESC
+        LIMIT :limit
+        """
+    )
+    rows = db.execute(sql, {"team_id": team_id, "limit": limit}).all()
+    return [
+        {
+            "start_date": r.start_date,
+            "end_date": r.end_date,
+            "sprint_ids": [int(r.id)],
+        }
+        for r in reversed(rows)
+    ]
+
+
+def previous_sprint_id_by_prefix(db: Session, sprint_id: int) -> int | None:
+    """The closed sprint sharing this sprint's name prefix that ended just before it.
+
+    Identifies a team's sprint chain by name prefix (e.g. "FS", "BFX", "HR")
+    rather than by team_id membership of issues. This matters because cross-team
+    work occasionally places one team's issue inside another team's sprint —
+    `previous_sprint_id` would then jump chains. Sprint names are hyphen-prefixed
+    (FS-503, BFX-503, HR-503), so split_part on '-' isolates the team identity.
+    """
+    sql = text(
+        """
+        WITH cur AS (
+            SELECT split_part(name, '-', 1) AS prefix, end_date
+            FROM sprints
+            WHERE id = :sprint_id
+        )
+        SELECT s.id
+        FROM sprints s, cur
+        WHERE s.state = 'closed'
+          AND s.end_date IS NOT NULL
+          AND s.id <> :sprint_id
+          AND split_part(s.name, '-', 1) = cur.prefix
+          AND s.end_date < cur.end_date
+        ORDER BY s.end_date DESC
+        LIMIT 1
+        """
+    )
+    row = db.execute(sql, {"sprint_id": sprint_id}).first()
+    return int(row[0]) if row else None
+
+
+def cadence_for_sprint(db: Session, sprint_id: int) -> dict[str, Any] | None:
+    """One-element cadence shape for an explicit sprint_id (dropdown selection)."""
+    sql = text(
+        """
+        SELECT start_date::date AS start_date,
+               end_date::date   AS end_date
+        FROM sprints
+        WHERE id = :sprint_id
+        """
+    )
+    row = db.execute(sql, {"sprint_id": sprint_id}).first()
+    if row is None:
+        return None
+    return {
+        "start_date": row.start_date,
+        "end_date": row.end_date,
+        "sprint_ids": [int(sprint_id)],
+    }

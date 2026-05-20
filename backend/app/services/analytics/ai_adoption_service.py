@@ -7,12 +7,41 @@ from sqlalchemy.orm import Session
 
 from app.services import analytics_service
 from app.services.analytics._helpers import (
-    latest_completed_week_start,
-    sprint_ids_ending_in_week,
+    cadence_for_sprint,
+    latest_closed_cadence,
+    latest_closed_sprint_cadence_for_team,
+    recent_cadences,
+    recent_sprint_cadences_for_team,
 )
 from app.services.analytics_service import AnalyticsFilters
 
-WEEK_STORY_LIMIT = 200
+STORY_LIMIT = 200
+
+
+def _resolve_cadences(
+    db: Session,
+    *,
+    team_ids: list[int] | None,
+    sprint_id: int | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    single_team = team_ids[0] if team_ids and len(team_ids) == 1 else None
+
+    if sprint_id is not None:
+        cadence = cadence_for_sprint(db, sprint_id)
+        if single_team is not None:
+            trends = recent_sprint_cadences_for_team(db, single_team, limit=12)
+        else:
+            trends = recent_cadences(db, limit=12)
+        return cadence, trends
+
+    if single_team is not None:
+        cadence = latest_closed_sprint_cadence_for_team(db, single_team)
+        trends = recent_sprint_cadences_for_team(db, single_team, limit=12)
+        return cadence, trends
+
+    cadence = latest_closed_cadence(db)
+    trends = recent_cadences(db, limit=12)
+    return cadence, trends
 
 
 def get_ai_adoption(
@@ -21,78 +50,69 @@ def get_ai_adoption(
     team_ids: list[int] | None = None,
     sprint_id: int | None = None,
 ) -> dict[str, Any]:
-    """Composite payload for the Analytics → AI Adoption tab landing page."""
-    trends = analytics_service.story_trends(
-        db,
-        last=12,
-        team_ids=team_ids,
-        has_sprint=True,
-        sprint_id=sprint_id,
-    )
-    latest = latest_completed_week_start(trends, allow_in_progress=sprint_id is not None)
-    empty_week_stories = {"items": [], "total": 0, "limit": WEEK_STORY_LIMIT, "offset": 0}
-    if latest is None:
-        return {
-            "story_trends": trends,
-            "latest_week_start": None,
-            "week_sprint_ids": [],
-            "week_team_breakdown": [],
-            "week_assignee_breakdown": [],
-            "week_stories": empty_week_stories,
-        }
+    """Composite payload for the Analytics → AI Adoption tab.
 
-    if sprint_id is not None:
-        sprint_ids = [sprint_id]
-    else:
-        sprint_ids = sprint_ids_ending_in_week(db, latest)
-    if not sprint_ids:
+    Sprint-only — no ISO-week branch. Landing uses the synchronized
+    FS/BFX/HR cadence; team drill-downs use the team's sprint chain.
+    """
+    cadence, trends_cadences = _resolve_cadences(
+        db, team_ids=team_ids, sprint_id=sprint_id
+    )
+    trends = analytics_service.story_trends_by_cadence(
+        db, cadences=trends_cadences, team_ids=team_ids
+    )
+    empty_stories = {"items": [], "total": 0, "limit": STORY_LIMIT, "offset": 0}
+
+    if cadence is None:
         return {
             "story_trends": trends,
-            "latest_week_start": latest,
-            "week_sprint_ids": [],
-            "week_team_breakdown": [],
-            "week_assignee_breakdown": [],
-            "week_stories": empty_week_stories,
+            "cadence_start": None,
+            "cadence_end": None,
+            "cadence_sprint_ids": [],
+            "cadence_team_breakdown": [],
+            "cadence_assignee_breakdown": [],
+            "cadence_stories": empty_stories,
         }
 
     filters = AnalyticsFilters(
         issue_type="Story",
         is_done=True,
-        sprint_ids=tuple(sprint_ids),
+        sprint_ids=tuple(cadence["sprint_ids"]),
         has_sprint=True,
     )
-    week_team_breakdown = analytics_service.by_team(db, filters, team_ids=team_ids)
-    week_assignee_breakdown = analytics_service.by_assignee(db, filters, team_ids=team_ids)
-    week_stories = _list_week_stories(
+    cadence_team_breakdown = analytics_service.by_team(db, filters, team_ids=team_ids)
+    cadence_assignee_breakdown = analytics_service.by_assignee(
+        db, filters, team_ids=team_ids
+    )
+    cadence_stories = _list_cadence_stories(
         db,
         team_ids=team_ids,
-        sprint_ids=sprint_ids,
-        limit=WEEK_STORY_LIMIT,
+        sprint_ids=cadence["sprint_ids"],
+        limit=STORY_LIMIT,
     )
     return {
         "story_trends": trends,
-        "latest_week_start": latest,
-        "week_sprint_ids": sprint_ids,
-        "week_team_breakdown": week_team_breakdown,
-        "week_assignee_breakdown": week_assignee_breakdown,
-        "week_stories": week_stories,
+        "cadence_start": cadence["start_date"],
+        "cadence_end": cadence["end_date"],
+        "cadence_sprint_ids": list(cadence["sprint_ids"]),
+        "cadence_team_breakdown": cadence_team_breakdown,
+        "cadence_assignee_breakdown": cadence_assignee_breakdown,
+        "cadence_stories": cadence_stories,
     }
 
 
-def _list_week_stories(
+def _list_cadence_stories(
     db: Session,
     *,
     team_ids: list[int] | None,
     sprint_ids: list[int],
     limit: int,
 ) -> dict[str, Any]:
-    """Mirrors the AiAdoption getIssues() call: Story+done, sprint-bucketed,
-    sorted by jira_key asc. Latest-sprint-per-issue must be in `sprint_ids` to
-    stay consistent with the KPI bucketing in story_trends.
-    """
+    """Story+done issues whose latest sprint is in `sprint_ids`."""
     clauses: list[str] = [
         "lower(f.issue_type) = 'story'",
         "f.is_done IS TRUE",
+        "(f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')",
         "f.issue_id IN (SELECT issue_id FROM issue_sprints)",
         (
             "f.issue_id IN ("
@@ -106,16 +126,16 @@ def _list_week_stories(
             ")"
         ),
     ]
-    params: dict[str, Any] = {"sprint_ids": sprint_ids, "limit": limit}
+    params: dict[str, Any] = {"sprint_ids": list(sprint_ids), "limit": limit}
     if team_ids:
         clauses.append("f.team_id = ANY(:team_ids)")
         params["team_ids"] = team_ids
     where = "WHERE " + " AND ".join(clauses)
 
-    total = db.execute(
-        text(f"SELECT COUNT(*) FROM v_issue_facts f {where}"),
-        params,
-    ).scalar_one() or 0
+    total = (
+        db.execute(text(f"SELECT COUNT(*) FROM v_issue_facts f {where}"), params).scalar_one()
+        or 0
+    )
 
     sql = text(
         f"""

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 from sqlalchemy import text
@@ -8,12 +7,65 @@ from sqlalchemy.orm import Session
 
 from app.services import analytics_service
 from app.services.analytics._helpers import (
-    latest_completed_week_start,
-    week_bounds,
+    cadence_for_sprint,
+    latest_closed_cadence,
+    latest_closed_sprint_cadence_for_team,
+    previous_cadence,
+    previous_sprint_id_by_prefix,
+    recent_cadences,
+    recent_sprint_cadences_for_team,
 )
 from app.services.analytics_service import AnalyticsFilters
 
-WEEK_STORY_LIMIT = 200
+STORY_LIMIT = 200
+
+
+def _resolve_cadences(
+    db: Session,
+    *,
+    team_ids: list[int] | None,
+    sprint_id: int | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[dict[str, Any]]]:
+    """Resolve (current cadence, previous cadence, trends cadences).
+
+    Three modes:
+    - explicit sprint_id (drill-down with picker) → that sprint is the cadence,
+      previous = previous_sprint_id() chain.
+    - single team_id, no sprint → latest closed sprint for that team; trends =
+      last 12 sprints of that team.
+    - multiple team_ids (landing) → synchronized FS/BFX/HR cadence; trends =
+      last 12 synchronized cadences.
+    """
+    single_team = team_ids[0] if team_ids and len(team_ids) == 1 else None
+
+    if sprint_id is not None:
+        cadence = cadence_for_sprint(db, sprint_id)
+        if single_team is not None:
+            trends = recent_sprint_cadences_for_team(db, single_team, limit=12)
+            prev_sid = previous_sprint_id_by_prefix(db, sprint_id)
+            prev = cadence_for_sprint(db, prev_sid) if prev_sid is not None else None
+        else:
+            trends = recent_cadences(db, limit=12)
+            prev = (
+                previous_cadence(db, cadence["end_date"]) if cadence else None
+            )
+        return cadence, prev, trends
+
+    if single_team is not None:
+        cadence = latest_closed_sprint_cadence_for_team(db, single_team)
+        trends = recent_sprint_cadences_for_team(db, single_team, limit=12)
+        prev = None
+        if cadence is not None:
+            prev_sid = previous_sprint_id_by_prefix(db, cadence["sprint_ids"][0])
+            prev = (
+                cadence_for_sprint(db, prev_sid) if prev_sid is not None else None
+            )
+        return cadence, prev, trends
+
+    cadence = latest_closed_cadence(db)
+    trends = recent_cadences(db, limit=12)
+    prev = previous_cadence(db, cadence["end_date"]) if cadence else None
+    return cadence, prev, trends
 
 
 def get_resource(
@@ -22,78 +74,98 @@ def get_resource(
     team_ids: list[int] | None = None,
     sprint_id: int | None = None,
 ) -> dict[str, Any]:
-    """Composite payload for the Analytics → Resource tab landing page."""
-    trends = analytics_service.story_trends(
-        db,
-        last=12,
-        team_ids=team_ids,
-        has_sprint=True,
-        sprint_id=sprint_id,
+    """Composite payload for the Analytics → Resource tab.
+
+    Sprint-only — no ISO-week branch. Landing pages use the synchronized
+    FS/BFX/HR cadence; team drill-downs use a single sprint cadence.
+    """
+    cadence, prev_cadence, trends_cadences = _resolve_cadences(
+        db, team_ids=team_ids, sprint_id=sprint_id
     )
-    latest = latest_completed_week_start(trends, allow_in_progress=sprint_id is not None)
-    empty_week_stories = {"items": [], "total": 0, "limit": WEEK_STORY_LIMIT, "offset": 0}
-    if latest is None:
+    trends = analytics_service.story_trends_by_cadence(
+        db, cadences=trends_cadences, team_ids=team_ids
+    )
+    empty_stories = {"items": [], "total": 0, "limit": STORY_LIMIT, "offset": 0}
+
+    if cadence is None:
         return {
             "story_trends": trends,
-            "latest_week_start": None,
-            "week_team_breakdown": [],
-            "week_assignee_breakdown": [],
-            "week_stories": empty_week_stories,
+            "cadence_start": None,
+            "cadence_end": None,
+            "cadence_sprint_ids": [],
+            "cadence_team_breakdown": [],
+            "cadence_assignee_breakdown": [],
+            "prev_only_assignees": [],
+            "prev_cadence_assignee_ids": [],
+            "cadence_stories": empty_stories,
         }
 
-    if sprint_id is not None:
-        # Single-sprint scope: filter by sprint_ids instead of resolved-in-week.
-        filters = AnalyticsFilters(
+    filters = AnalyticsFilters(
+        issue_type="Story",
+        sprint_ids=tuple(cadence["sprint_ids"]),
+        has_sprint=True,
+    )
+    cadence_team_breakdown = analytics_service.by_team(db, filters, team_ids=team_ids)
+    cadence_assignee_breakdown = analytics_service.by_assignee(
+        db, filters, team_ids=team_ids
+    )
+
+    prev_only_assignees: list[dict[str, Any]] = []
+    prev_cadence_assignee_ids: list[int] = []
+    if prev_cadence is not None:
+        prev_filters = AnalyticsFilters(
             issue_type="Story",
-            sprint_ids=(sprint_id,),
+            sprint_ids=tuple(prev_cadence["sprint_ids"]),
             has_sprint=True,
         )
-    else:
-        resolved_since, resolved_until = week_bounds(latest)
-        filters = AnalyticsFilters(
-            issue_type="Story",
-            resolved_since=resolved_since,
-            resolved_until=resolved_until,
-            has_sprint=True,
+        prev_assignees = analytics_service.by_assignee(
+            db, prev_filters, team_ids=team_ids
         )
-    week_team_breakdown = analytics_service.by_team(db, filters, team_ids=team_ids)
-    week_assignee_breakdown = analytics_service.by_assignee(db, filters, team_ids=team_ids)
-    week_stories = _list_week_stories(
+        curr_ids = {
+            r["assignee_id"]
+            for r in cadence_assignee_breakdown
+            if r.get("assignee_id") is not None
+        }
+        prev_only_assignees = [
+            r for r in prev_assignees if r.get("assignee_id") not in curr_ids
+        ]
+        prev_cadence_assignee_ids = [
+            int(r["assignee_id"])
+            for r in prev_assignees
+            if r.get("assignee_id") is not None
+        ]
+
+    cadence_stories = _list_cadence_stories(
         db,
         team_ids=team_ids,
-        sprint_id=sprint_id,
-        week_start=latest,
-        limit=WEEK_STORY_LIMIT,
+        sprint_ids=cadence["sprint_ids"],
+        limit=STORY_LIMIT,
     )
     return {
         "story_trends": trends,
-        "latest_week_start": latest,
-        "week_team_breakdown": week_team_breakdown,
-        "week_assignee_breakdown": week_assignee_breakdown,
-        "week_stories": week_stories,
+        "cadence_start": cadence["start_date"],
+        "cadence_end": cadence["end_date"],
+        "cadence_sprint_ids": list(cadence["sprint_ids"]),
+        "cadence_team_breakdown": cadence_team_breakdown,
+        "cadence_assignee_breakdown": cadence_assignee_breakdown,
+        "prev_only_assignees": prev_only_assignees,
+        "prev_cadence_assignee_ids": prev_cadence_assignee_ids,
+        "cadence_stories": cadence_stories,
     }
 
 
-def _list_week_stories(
+def _list_cadence_stories(
     db: Session,
     *,
     team_ids: list[int] | None,
-    sprint_id: int | None,
-    week_start: date,
+    sprint_ids: list[int],
     limit: int,
 ) -> dict[str, Any]:
-    """Sprint-linked Stories matching the Resource breakdown filter:
-
-    - sprint_id set → stories whose latest sprint == sprint_id
-    - otherwise → stories resolved during week_start's Mon–Sun span
-    """
+    """Stories whose latest sprint is one of `sprint_ids`."""
     clauses: list[str] = [
         "lower(f.issue_type) = 'story'",
-        "f.issue_id IN (SELECT issue_id FROM issue_sprints)",
-    ]
-    params: dict[str, Any] = {"limit": limit}
-    if sprint_id is not None:
-        clauses.append(
+        "(f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')",
+        (
             "f.issue_id IN ("
             " SELECT lsp.issue_id FROM ("
             "   SELECT DISTINCT ON (iss.issue_id) iss.issue_id, iss.sprint_id"
@@ -101,25 +173,20 @@ def _list_week_stories(
             "   JOIN sprints s ON s.id = iss.sprint_id"
             "   WHERE s.end_date IS NOT NULL"
             "   ORDER BY iss.issue_id, s.end_date DESC"
-            " ) lsp WHERE lsp.sprint_id = :sprint_id"
+            " ) lsp WHERE lsp.sprint_id = ANY(:sprint_ids)"
             ")"
-        )
-        params["sprint_id"] = sprint_id
-    else:
-        start_dt, end_dt = week_bounds(week_start)
-        clauses.append("f.resolved_at >= :start_dt")
-        clauses.append("f.resolved_at <  :end_dt")
-        params["start_dt"] = start_dt
-        params["end_dt"] = end_dt
+        ),
+    ]
+    params: dict[str, Any] = {"limit": limit, "sprint_ids": list(sprint_ids)}
     if team_ids:
         clauses.append("f.team_id = ANY(:team_ids)")
         params["team_ids"] = team_ids
     where = "WHERE " + " AND ".join(clauses)
 
-    total = db.execute(
-        text(f"SELECT COUNT(*) FROM v_issue_facts f {where}"),
-        params,
-    ).scalar_one() or 0
+    total = (
+        db.execute(text(f"SELECT COUNT(*) FROM v_issue_facts f {where}"), params).scalar_one()
+        or 0
+    )
 
     sql = text(
         f"""

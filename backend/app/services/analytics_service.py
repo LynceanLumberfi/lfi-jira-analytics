@@ -31,8 +31,17 @@ class AnalyticsFilters:
     is_done: bool | None = None
 
 
+# Analytics tabs exclude QA-prefixed work (summary starts with "[QA]") org-wide.
+# These are testing tickets that distort velocity, skill adoption, and bug
+# ratios. Applied case-insensitively to catch "[QA]", "[QA] ", "[QA]-", etc.
+# ltrim() because some titles slipped through with a leading space before [QA].
+# NULL summaries are preserved (LIKE on NULL yields NULL, so the OR keeps them).
+def _exclude_qa_clause(alias: str = "f") -> str:
+    return f"({alias}.summary IS NULL OR ltrim({alias}.summary) NOT ILIKE '[QA]%')"
+
+
 def _where_clauses(filters: AnalyticsFilters, alias: str = "f") -> tuple[str, dict[str, Any]]:
-    clauses: list[str] = []
+    clauses: list[str] = [_exclude_qa_clause(alias)]
     params: dict[str, Any] = {}
     if filters.team_id is not None:
         clauses.append(f"{alias}.team_id = :team_id")
@@ -357,6 +366,7 @@ def story_trends(
             JOIN in_universe i2 ON i2.issue_id = f.issue_id
             WHERE f.issue_type = 'Story'
               AND f.is_done IS TRUE
+              AND (f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')
               {extra}
         ),
         done_any_weekly AS (
@@ -368,6 +378,7 @@ def story_trends(
             WHERE f.issue_type = 'Story'
               AND f.is_done IS TRUE
               AND f.assignee_id IS NOT NULL
+              AND (f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')
               {extra}
             GROUP BY i2.week_start
         )
@@ -401,6 +412,164 @@ def story_trends(
     )
     rows = db.execute(sql, params).all()
     return [dict(r._mapping) for r in rows]
+
+
+# ---------- story trends by cadence (Resource tab) ----------
+
+
+def story_trends_by_cadence(
+    db: Session,
+    *,
+    cadences: list[dict[str, Any]],
+    team_ids: list[int] | None = None,
+    project: str | None = None,
+) -> list[dict[str, Any]]:
+    """One row per cadence with the same shape as story_trends().
+
+    Each cadence is `{start_date, end_date, sprint_ids}` — the aggregation
+    filters issues whose latest sprint is in `sprint_ids`. Used by the Resource
+    tab trends chart, where each x-tick is a synchronized cadence (landing) or
+    a single team sprint (drill-down).
+    """
+    if not cadences:
+        return []
+    results: list[dict[str, Any]] = []
+    for cadence in cadences:
+        filters = AnalyticsFilters(
+            issue_type="Story",
+            is_done=True,
+            sprint_ids=tuple(cadence["sprint_ids"]),
+            has_sprint=True,
+            project=project,
+        )
+        where, params = _where_clauses(filters)
+        extra: list[str] = []
+        _apply_team_filter(extra, params, None, team_ids)
+        for clause in extra:
+            term = clause.lstrip("AND ").strip()
+            where = (where + " AND " + term) if where else ("WHERE " + term)
+        sql = text(
+            f"""
+            SELECT
+                COALESCE(SUM(f.story_points), 0)                                              AS story_points,
+                CASE WHEN COUNT(*) FILTER (WHERE f.quality_score IS NOT NULL) > 0
+                     THEN COUNT(*) FILTER (WHERE f.skill_usage_detected IS TRUE)::float
+                          / COUNT(*) FILTER (WHERE f.quality_score IS NOT NULL)
+                     ELSE NULL END                                                            AS skill_adoption_rate,
+                CASE WHEN COUNT(DISTINCT f.assignee_id) > 0
+                     THEN SUM(f.story_points) / NULLIF(COUNT(DISTINCT f.assignee_id), 0)
+                     ELSE NULL END                                                            AS points_per_active_resource,
+                CASE WHEN SUM(f.story_points) FILTER (WHERE f.spent_hours > 0 AND f.story_points > 0) > 0
+                     THEN SUM(f.spent_hours) FILTER (WHERE f.spent_hours > 0 AND f.story_points > 0)
+                          / SUM(f.story_points) FILTER (WHERE f.spent_hours > 0 AND f.story_points > 0)
+                     ELSE NULL END                                                            AS hours_per_point,
+                COUNT(*)                                                                      AS story_count,
+                COUNT(*) FILTER (WHERE f.quality_score IS NOT NULL)                           AS scored_count,
+                COUNT(DISTINCT f.assignee_id)                                                 AS active_resources,
+                COUNT(*) FILTER (WHERE f.spent_hours > 0 AND f.story_points > 0)              AS hour_logged_count,
+                COUNT(*) FILTER (WHERE f.skill_usage_detected IS TRUE)                        AS skill_count,
+                COUNT(DISTINCT f.assignee_id) FILTER (WHERE f.skill_usage_detected IS TRUE)   AS skill_adopters,
+                COUNT(DISTINCT f.assignee_id) FILTER (WHERE f.assignee_id IS NOT NULL)        AS active_delivered_devs
+            FROM v_issue_facts f
+            {where}
+            """
+        )
+        row = db.execute(sql, params).one()._mapping
+        results.append(
+            {
+                "cadence_start": cadence["start_date"],
+                "cadence_end": cadence["end_date"],
+                "sprint_ids": list(cadence["sprint_ids"]),
+                "story_points": float(row["story_points"] or 0),
+                "skill_adoption_rate": (
+                    float(row["skill_adoption_rate"])
+                    if row["skill_adoption_rate"] is not None
+                    else None
+                ),
+                "points_per_active_resource": (
+                    float(row["points_per_active_resource"])
+                    if row["points_per_active_resource"] is not None
+                    else None
+                ),
+                "hours_per_point": (
+                    float(row["hours_per_point"])
+                    if row["hours_per_point"] is not None
+                    else None
+                ),
+                "story_count": int(row["story_count"] or 0),
+                "scored_count": int(row["scored_count"] or 0),
+                "active_resources": int(row["active_resources"] or 0),
+                "hour_logged_count": int(row["hour_logged_count"] or 0),
+                "skill_count": int(row["skill_count"] or 0),
+                "skill_adopters": int(row["skill_adopters"] or 0),
+                "active_delivered_devs": int(row["active_delivered_devs"] or 0),
+            }
+        )
+    return results
+
+
+# ---------- issue-type trends by cadence (Quality tab) ----------
+
+
+def issue_type_trends_by_cadence(
+    db: Session,
+    *,
+    cadences: list[dict[str, Any]],
+    team_ids: list[int] | None = None,
+    project: str | None = None,
+) -> list[dict[str, Any]]:
+    """One row per cadence with completed Story/Bug/Task counts.
+
+    Mirrors the row shape of issue_type_trends() (`stories`, `bugs`,
+    `customer_bugs`, `qa_bugs`, `tasks`, `total`) but keyed by cadence
+    boundaries instead of ISO weeks.
+    """
+    if not cadences:
+        return []
+    results: list[dict[str, Any]] = []
+    for cadence in cadences:
+        filters = AnalyticsFilters(
+            is_done=True,
+            sprint_ids=tuple(cadence["sprint_ids"]),
+            has_sprint=True,
+            project=project,
+        )
+        where, params = _where_clauses(filters)
+        extra: list[str] = []
+        _apply_team_filter(extra, params, None, team_ids)
+        for clause in extra:
+            term = clause.lstrip("AND ").strip()
+            where = (where + " AND " + term) if where else ("WHERE " + term)
+        type_clause = "lower(f.issue_type) IN ('story', 'bug', 'task')"
+        where = (where + " AND " + type_clause) if where else ("WHERE " + type_clause)
+        sql = text(
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE lower(f.issue_type) = 'story')                                       AS stories,
+                COUNT(*) FILTER (WHERE lower(f.issue_type) = 'bug' AND f.reported_by_customer IS TRUE)      AS customer_bugs,
+                COUNT(*) FILTER (WHERE lower(f.issue_type) = 'bug' AND COALESCE(f.reported_by_customer, FALSE) IS FALSE) AS qa_bugs,
+                COUNT(*) FILTER (WHERE lower(f.issue_type) = 'bug')                                         AS bugs,
+                COUNT(*) FILTER (WHERE lower(f.issue_type) = 'task')                                        AS tasks,
+                COUNT(*)                                                                                    AS total
+            FROM v_issue_facts f
+            {where}
+            """
+        )
+        row = db.execute(sql, params).one()._mapping
+        results.append(
+            {
+                "cadence_start": cadence["start_date"],
+                "cadence_end": cadence["end_date"],
+                "sprint_ids": list(cadence["sprint_ids"]),
+                "stories": int(row["stories"] or 0),
+                "customer_bugs": int(row["customer_bugs"] or 0),
+                "qa_bugs": int(row["qa_bugs"] or 0),
+                "bugs": int(row["bugs"] or 0),
+                "tasks": int(row["tasks"] or 0),
+                "total": int(row["total"] or 0),
+            }
+        )
+    return results
 
 
 # ---------- issue-type trends (weekly completed counts by type) ----------
@@ -453,6 +622,7 @@ def issue_type_trends(
             JOIN in_universe i2 ON i2.issue_id = f.issue_id
             WHERE f.is_done IS TRUE
               AND lower(f.issue_type) IN ('story', 'bug', 'task')
+              AND (f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')
               {extra}
         )
         SELECT

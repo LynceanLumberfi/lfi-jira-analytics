@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getAnalyticsAiAdoption, getSprints, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
+import { cadenceLabel } from "../../lib/cadence";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
 import { DevSkillAdoptionChart } from "../../components/charts/DevSkillAdoptionChart";
@@ -12,24 +13,6 @@ import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 function pct(v) {
   if (v == null) return "—";
   return `${Math.round(v * 100)}%`;
-}
-
-function weekLabel(weekStart) {
-  if (!weekStart) return "";
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const start = new Date(y, m - 1, d);
-  const end = new Date(y, m - 1, d + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function currentIsoWeekMonday() {
-  const dt = new Date();
-  const day = dt.getDay() || 7;
-  dt.setDate(dt.getDate() - day + 1);
-  dt.setHours(0, 0, 0, 0);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function safeRate(num, den) {
@@ -68,16 +51,10 @@ export function AiAdoptionTeam() {
     queryFn: () => getAnalyticsAiAdoption({ team_id: numTeamId, sprint_id: sprintId ?? undefined }),
     enabled: isKnown,
   });
-  const trends = payload?.story_trends;
-  const weekIssues = payload?.week_stories;
-  const devRows = payload?.week_assignee_breakdown ?? [];
-
-  const currentWeek = currentIsoWeekMonday();
-  const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
-    : [];
-  const lastWeek = completedWeeks[0] ?? null;
-  const prevWeek = completedWeeks[1] ?? null;
+  const trends = payload?.story_trends ?? [];
+  const cadenceStories = payload?.cadence_stories;
+  const devRows = payload?.cadence_assignee_breakdown ?? [];
+  const hasCadence = payload?.cadence_end != null;
 
   function onSprintChange(e) {
     const next = new URLSearchParams(searchParams);
@@ -86,26 +63,33 @@ export function AiAdoptionTeam() {
     setSearchParams(next, { replace: true });
   }
 
-  const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
-  const prevStoryRate = prevWeek ? safeRate(prevWeek.skill_count, prevWeek.story_count) : null;
+  const currentIdx = (() => {
+    if (!hasCadence || trends.length === 0) return -1;
+    const target = payload.cadence_end;
+    const idx = trends.findIndex((r) => r.cadence_end === target);
+    return idx >= 0 ? idx : trends.length - 1;
+  })();
+  const currentRow = currentIdx >= 0 ? trends[currentIdx] : null;
+  const prevRow = currentIdx > 0 ? trends[currentIdx - 1] : null;
 
-  const devRate = lastWeek
-    ? safeRate(lastWeek.skill_adopters, lastWeek.active_delivered_devs)
+  const storyRate = currentRow ? safeRate(currentRow.skill_count, currentRow.story_count) : null;
+  const prevStoryRate = prevRow ? safeRate(prevRow.skill_count, prevRow.story_count) : null;
+
+  const devRate = currentRow
+    ? safeRate(currentRow.skill_adopters, currentRow.active_delivered_devs)
     : null;
-  const prevDevRate = prevWeek
-    ? safeRate(prevWeek.skill_adopters, prevWeek.active_delivered_devs)
+  const prevDevRate = prevRow
+    ? safeRate(prevRow.skill_adopters, prevRow.active_delivered_devs)
     : null;
 
-  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
-
-  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
+  const prevSub = prevRow ? cadenceLabel(prevRow.cadence_start, prevRow.cadence_end) : undefined;
 
   const storyDelta = computeDelta({
     curr: storyRate,
     prev: prevStoryRate,
     higherIsBetter: true,
     fmtPrev: prevStoryRate != null ? pct(prevStoryRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_count}/${prevWeek.story_count} stories` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.skill_count}/${prevRow.story_count} stories` : prevSub,
   });
 
   const devDelta = computeDelta({
@@ -113,10 +97,11 @@ export function AiAdoptionTeam() {
     prev: prevDevRate,
     higherIsBetter: true,
     fmtPrev: prevDevRate != null ? pct(prevDevRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.skill_adopters}/${prevWeek.active_delivered_devs} devs` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.skill_adopters}/${prevRow.active_delivered_devs} devs` : prevSub,
   });
 
   const teamName = team?.name ?? `Team #${teamId}`;
+  const currentLabel = hasCadence ? cadenceLabel(payload.cadence_start, payload.cadence_end) : "";
 
   return (
     <div className="flex flex-col gap-6">
@@ -125,8 +110,8 @@ export function AiAdoptionTeam() {
           <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
           <p className="mt-1 text-[13px] text-ink-3">
             Skill adoption across delivered Stories and the engineers shipping them.
-            {lastWeek && (
-              <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+            {hasCadence && (
+              <> Sprint <span className="font-medium text-ink-2">{currentLabel}</span>.</>
             )}
           </p>
         </div>
@@ -136,7 +121,7 @@ export function AiAdoptionTeam() {
             onChange={onSprintChange}
             className="rounded border border-border bg-bg-sunken px-2.5 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-accent"
           >
-            <option value="">All sprints</option>
+            <option value="">Latest closed</option>
             {sprints.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name ?? "Unnamed"} ({s.jira_sprint_id})
@@ -150,9 +135,9 @@ export function AiAdoptionTeam() {
         <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
           <Loader2 size={14} className="animate-spin" /> Loading…
         </div>
-      ) : !lastWeek ? (
+      ) : !hasCadence ? (
         <div className="rounded-lg border border-dashed border-border bg-bg-sunken py-16 text-center text-[13px] text-ink-3">
-          No completed Stories in the last 12 weeks.
+          No closed sprint found for this team.
         </div>
       ) : (
         <>
@@ -161,8 +146,8 @@ export function AiAdoptionTeam() {
               label="Stories delivered with Skill"
               value={pct(storyRate)}
               sub={
-                lastWeek.story_count > 0
-                  ? `${lastWeek.skill_count} of ${lastWeek.story_count} stories`
+                currentRow?.story_count > 0
+                  ? `${currentRow.skill_count} of ${currentRow.story_count} stories`
                   : "no stories delivered"
               }
               tone="ok"
@@ -172,8 +157,8 @@ export function AiAdoptionTeam() {
               label="Developers using Skill"
               value={pct(devRate)}
               sub={
-                lastWeek.active_delivered_devs > 0
-                  ? `${lastWeek.skill_adopters} of ${lastWeek.active_delivered_devs} active devs`
+                currentRow?.active_delivered_devs > 0
+                  ? `${currentRow.skill_adopters} of ${currentRow.active_delivered_devs} active devs`
                   : "no active devs"
               }
               tone="info"
@@ -183,19 +168,17 @@ export function AiAdoptionTeam() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Skill adoption — last 12 weeks</CardTitle>
-              <span className="text-[12.5px] text-ink-3">
-                Completed weeks only · in-progress week excluded
-              </span>
+              <CardTitle>Skill adoption — last 12 sprints</CardTitle>
+              <span className="text-[12.5px] text-ink-3">Closed sprints only</span>
             </CardHeader>
             <CardBody pad="lg">
-              <SkillAdoptionTrendsChart data={completedTrends} />
+              <SkillAdoptionTrendsChart data={trends} />
             </CardBody>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Skill usage by developer — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Skill usage by developer — {currentLabel}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
                 Stories delivered with Skill ÷ stories delivered
               </span>
@@ -207,15 +190,15 @@ export function AiAdoptionTeam() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Stories delivered — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Stories delivered — {currentLabel}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                {weekIssues ? `${weekIssues.total} stories` : ""}
+                {cadenceStories ? `${cadenceStories.total} stories` : ""}
               </span>
             </CardHeader>
             <CardBody pad="none">
               <StoriesTable
-                items={weekIssues?.items ?? []}
-                isLoading={!weekIssues}
+                items={cadenceStories?.items ?? []}
+                isLoading={!cadenceStories}
                 showTeamFilter={false}
               />
             </CardBody>

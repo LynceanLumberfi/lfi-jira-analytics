@@ -10,6 +10,8 @@ from app.db import get_db
 from app.schemas.analytics import (
     AiAdoptionResponseOut,
     AssigneeAggregateOut,
+    CadenceIssueTypeTrendOut,
+    CadenceTrendOut,
     CostSummaryOut,
     EpicProgressOut,
     IssueTypeTrendOut,
@@ -222,16 +224,17 @@ def ai_adoption(
         sprint_id=sprint_id,
     )
     return AiAdoptionResponseOut(
-        story_trends=[StoryTrendOut(**_coerce(r)) for r in payload["story_trends"]],
-        latest_week_start=payload["latest_week_start"],
-        week_sprint_ids=payload["week_sprint_ids"],
-        week_team_breakdown=[
-            TeamAggregateOut(**_coerce(r)) for r in payload["week_team_breakdown"]
+        story_trends=[CadenceTrendOut(**_coerce(r)) for r in payload["story_trends"]],
+        cadence_start=payload["cadence_start"],
+        cadence_end=payload["cadence_end"],
+        cadence_sprint_ids=payload["cadence_sprint_ids"],
+        cadence_team_breakdown=[
+            TeamAggregateOut(**_coerce(r)) for r in payload["cadence_team_breakdown"]
         ],
-        week_assignee_breakdown=[
-            AssigneeAggregateOut(**_coerce(r)) for r in payload["week_assignee_breakdown"]
+        cadence_assignee_breakdown=[
+            AssigneeAggregateOut(**_coerce(r)) for r in payload["cadence_assignee_breakdown"]
         ],
-        week_stories=payload["week_stories"],
+        cadence_stories=payload["cadence_stories"],
     )
 
 
@@ -248,15 +251,21 @@ def resource(
         sprint_id=sprint_id,
     )
     return ResourceResponseOut(
-        story_trends=[StoryTrendOut(**_coerce(r)) for r in payload["story_trends"]],
-        latest_week_start=payload["latest_week_start"],
-        week_team_breakdown=[
-            TeamAggregateOut(**_coerce(r)) for r in payload["week_team_breakdown"]
+        story_trends=[CadenceTrendOut(**_coerce(r)) for r in payload["story_trends"]],
+        cadence_start=payload["cadence_start"],
+        cadence_end=payload["cadence_end"],
+        cadence_sprint_ids=payload["cadence_sprint_ids"],
+        cadence_team_breakdown=[
+            TeamAggregateOut(**_coerce(r)) for r in payload["cadence_team_breakdown"]
         ],
-        week_assignee_breakdown=[
-            AssigneeAggregateOut(**_coerce(r)) for r in payload["week_assignee_breakdown"]
+        cadence_assignee_breakdown=[
+            AssigneeAggregateOut(**_coerce(r)) for r in payload["cadence_assignee_breakdown"]
         ],
-        week_stories=payload["week_stories"],
+        prev_only_assignees=[
+            AssigneeAggregateOut(**_coerce(r)) for r in payload["prev_only_assignees"]
+        ],
+        prev_cadence_assignee_ids=payload["prev_cadence_assignee_ids"],
+        cadence_stories=payload["cadence_stories"],
     )
 
 
@@ -272,13 +281,15 @@ def quality(
         team_ids=_resolve_team_ids(team_id, team_ids, db),
         sprint_id=sprint_id,
     )
-    breakdown = payload["week_team_breakdown"]
+    breakdown = payload["cadence_team_breakdown"]
     return QualityResponseOut(
         issue_type_trends=[
-            IssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
+            CadenceIssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
         ],
-        latest_week_start=payload["latest_week_start"],
-        week_team_breakdown={
+        cadence_start=payload["cadence_start"],
+        cadence_end=payload["cadence_end"],
+        cadence_sprint_ids=payload["cadence_sprint_ids"],
+        cadence_team_breakdown={
             "story": [TeamAggregateOut(**_coerce(r)) for r in breakdown["story"]],
             "bug": [TeamAggregateOut(**_coerce(r)) for r in breakdown["bug"]],
             "task": [TeamAggregateOut(**_coerce(r)) for r in breakdown["task"]],

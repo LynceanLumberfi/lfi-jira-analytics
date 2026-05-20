@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { getAnalyticsQuality, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
+import { cadenceLabel } from "../../lib/cadence";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { QualityTrendsChart } from "../../components/charts/QualityTrendsChart";
 import { KpiHero, DeltaArrow, computeDelta } from "../../components/ui/KpiHero";
@@ -10,24 +11,6 @@ import { KpiHero, DeltaArrow, computeDelta } from "../../components/ui/KpiHero";
 function pct(v) {
   if (v == null) return "—";
   return `${Math.round(v * 100)}%`;
-}
-
-function weekLabel(weekStart) {
-  if (!weekStart) return "";
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const start = new Date(y, m - 1, d);
-  const end = new Date(y, m - 1, d + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function currentIsoWeekMonday() {
-  const dt = new Date();
-  const day = dt.getDay() || 7;
-  dt.setDate(dt.getDate() - day + 1);
-  dt.setHours(0, 0, 0, 0);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function BugsSplitCard({ customerRate, qaRate, customerBugs, qaBugs, customerDelta, qaDelta }) {
@@ -89,18 +72,14 @@ export function Quality() {
     queryFn: () => getAnalyticsQuality({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
-  const trends = payload?.issue_type_trends;
-  const storyTeamRows = payload?.week_team_breakdown?.story;
-  const bugTeamRows = payload?.week_team_breakdown?.bug;
-  const taskTeamRows = payload?.week_team_breakdown?.task;
+  const trends = payload?.issue_type_trends ?? [];
+  const storyTeamRows = payload?.cadence_team_breakdown?.story;
+  const bugTeamRows = payload?.cadence_team_breakdown?.bug;
+  const taskTeamRows = payload?.cadence_team_breakdown?.task;
+  const hasCadence = payload?.cadence_end != null;
 
-  const currentWeek = currentIsoWeekMonday();
-  const completedWeeks = trends
-    ? [...trends].reverse().filter((w) => w.week_start < currentWeek)
-    : [];
-  const lastWeek = completedWeeks[0] ?? null;
-  const prevWeek = completedWeeks[1] ?? null;
-  const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
+  const currentRow = trends.length > 0 ? trends[trends.length - 1] : null;
+  const prevRow = trends.length > 1 ? trends[trends.length - 2] : null;
 
   const teamData = useMemo(() => {
     if (!storyTeamRows || !bugTeamRows || !taskTeamRows) return null;
@@ -122,43 +101,44 @@ export function Quality() {
       .sort((a, b) => b.stories - a.stories);
   }, [storyTeamRows, bugTeamRows, taskTeamRows]);
 
-  // KPI computations
-  const storyMix     = safeRate(lastWeek?.stories, lastWeek?.total);
-  const prevStoryMix = safeRate(prevWeek?.stories, prevWeek?.total);
-  const customerRate = safeRate(lastWeek?.customer_bugs, lastWeek?.total);
-  const qaRate       = safeRate(lastWeek?.qa_bugs,       lastWeek?.total);
-  const prevCustomerRate = safeRate(prevWeek?.customer_bugs, prevWeek?.total);
-  const prevQaRate       = safeRate(prevWeek?.qa_bugs,       prevWeek?.total);
-  const taskRate     = safeRate(lastWeek?.tasks,   lastWeek?.total);
-  const prevTaskRate = safeRate(prevWeek?.tasks,   prevWeek?.total);
+  const storyMix     = safeRate(currentRow?.stories, currentRow?.total);
+  const prevStoryMix = safeRate(prevRow?.stories, prevRow?.total);
+  const customerRate = safeRate(currentRow?.customer_bugs, currentRow?.total);
+  const qaRate       = safeRate(currentRow?.qa_bugs,       currentRow?.total);
+  const prevCustomerRate = safeRate(prevRow?.customer_bugs, prevRow?.total);
+  const prevQaRate       = safeRate(prevRow?.qa_bugs,       prevRow?.total);
+  const taskRate     = safeRate(currentRow?.tasks,   currentRow?.total);
+  const prevTaskRate = safeRate(prevRow?.tasks,   prevRow?.total);
 
-  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
+  const prevSub = prevRow ? cadenceLabel(prevRow.cadence_start, prevRow.cadence_end) : undefined;
 
   const storyDelta = computeDelta({
     curr: storyMix, prev: prevStoryMix, higherIsBetter: true,
     fmtPrev: prevStoryMix != null ? pct(prevStoryMix) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.stories} stories` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.stories} stories` : prevSub,
   });
   const customerDelta = computeDelta({
     curr: customerRate, prev: prevCustomerRate, higherIsBetter: false,
     fmtPrev: prevCustomerRate != null ? pct(prevCustomerRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.customer_bugs} cust bugs` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.customer_bugs} cust bugs` : prevSub,
   });
   const qaDelta = computeDelta({
     curr: qaRate, prev: prevQaRate, higherIsBetter: false,
     fmtPrev: prevQaRate != null ? pct(prevQaRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.qa_bugs} QA bugs` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.qa_bugs} QA bugs` : prevSub,
   });
   const taskDelta = computeDelta({
     curr: taskRate, prev: prevTaskRate, higherIsBetter: false,
     fmtPrev: prevTaskRate != null ? pct(prevTaskRate) : undefined,
-    prevSub: prevWeek ? `${prevSub} · ${prevWeek.tasks} tasks` : prevSub,
+    prevSub: prevRow ? `${prevSub} · ${prevRow.tasks} tasks` : prevSub,
   });
   const totalDelta = computeDelta({
-    curr: lastWeek?.total ?? null, prev: prevWeek?.total ?? null, higherIsBetter: true,
-    fmtPrev: prevWeek?.total != null ? String(prevWeek.total) : undefined,
+    curr: currentRow?.total ?? null, prev: prevRow?.total ?? null, higherIsBetter: true,
+    fmtPrev: prevRow?.total != null ? String(prevRow.total) : undefined,
     prevSub,
   });
+
+  const currentLabel = hasCadence ? cadenceLabel(payload.cadence_start, payload.cadence_end) : "";
 
   return (
     <div className="flex flex-col gap-6">
@@ -166,8 +146,8 @@ export function Quality() {
         <h2 className="text-[18px] font-semibold text-ink">Quality</h2>
         <p className="mt-1 text-[13px] text-ink-3">
           Stories vs Bugs vs Tasks mix across all delivered work.
-          {lastWeek && (
-            <> Sprint week <span className="font-medium text-ink-2">{weekLabel(lastWeek.week_start)}</span>.</>
+          {hasCadence && (
+            <> Sprint cadence <span className="font-medium text-ink-2">{currentLabel}</span>.</>
           )}
         </p>
       </header>
@@ -176,9 +156,9 @@ export function Quality() {
         <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
           <Loader2 size={14} className="animate-spin" /> Loading…
         </div>
-      ) : !lastWeek ? (
+      ) : !hasCadence ? (
         <div className="rounded-lg border border-dashed border-border bg-bg-sunken py-16 text-center text-[13px] text-ink-3">
-          No delivered issues in the last 12 weeks.
+          No synchronized sprint cadence has closed yet.
         </div>
       ) : (
         <>
@@ -186,29 +166,29 @@ export function Quality() {
             <KpiHero
               label="Story Mix"
               value={pct(storyMix)}
-              sub={`${lastWeek.stories} of ${lastWeek.total} issues`}
+              sub={`${currentRow.stories} of ${currentRow.total} issues`}
               tone="ok"
               delta={storyDelta}
             />
             <BugsSplitCard
               customerRate={customerRate}
               qaRate={qaRate}
-              customerBugs={lastWeek.customer_bugs}
-              qaBugs={lastWeek.qa_bugs}
+              customerBugs={currentRow.customer_bugs}
+              qaBugs={currentRow.qa_bugs}
               customerDelta={customerDelta}
               qaDelta={qaDelta}
             />
             <KpiHero
               label="Task Rate"
               value={pct(taskRate)}
-              sub={`${lastWeek.tasks} task${lastWeek.tasks !== 1 ? "s" : ""}`}
+              sub={`${currentRow.tasks} task${currentRow.tasks !== 1 ? "s" : ""}`}
               tone="warn"
               delta={taskDelta}
             />
             <KpiHero
               label="Total Delivered"
-              value={lastWeek.total}
-              sub={`${lastWeek.stories}S · ${lastWeek.bugs}B · ${lastWeek.tasks}T`}
+              value={currentRow.total}
+              sub={`${currentRow.stories}S · ${currentRow.bugs}B · ${currentRow.tasks}T`}
               tone="accent"
               delta={totalDelta}
             />
@@ -216,20 +196,20 @@ export function Quality() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Delivery mix — last 12 weeks</CardTitle>
+              <CardTitle>Delivery mix — last 12 cadences</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                Completed weeks only · in-progress week excluded
+                Synchronized FS / BFX / HR sprints only
               </span>
             </CardHeader>
             <CardBody pad="lg">
-              <QualityTrendsChart data={completedTrends} />
+              <QualityTrendsChart data={trends} />
             </CardBody>
           </Card>
 
           {teamData && teamData.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Team breakdown — {weekLabel(lastWeek.week_start)}</CardTitle>
+                <CardTitle>Team breakdown — {currentLabel}</CardTitle>
               </CardHeader>
               <CardBody pad="none">
                 <table className="w-full border-collapse text-sm">

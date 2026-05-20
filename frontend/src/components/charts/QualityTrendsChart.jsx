@@ -1,21 +1,9 @@
 import { useMemo, useState } from "react";
 import ReactECharts from "echarts-for-react";
+import { cadenceLabel, cadenceTickLabel } from "../../lib/cadence";
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function formatWeekLabel(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function formatWeekRange(weekStart) {
-  const [year, month, day] = weekStart.split("-").map(Number);
-  const start = new Date(year, month - 1, day);
-  const end = new Date(year, month - 1, day + 6);
-  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 const SERIES_STORIES = "Stories";
@@ -44,7 +32,7 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
       bgElev: cssVar("--bg-elev"),
     };
 
-    const labels = data.map((r) => formatWeekLabel(r.week_start));
+    const labels = data.map((r) => cadenceTickLabel(r.cadence_start, r.cadence_end));
     const stories = data.map((r) => r.stories ?? 0);
     const customerBugs = data.map((r) => r.customer_bugs ?? 0);
     const qaBugs = data.map((r) => r.qa_bugs ?? 0);
@@ -79,7 +67,7 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
           const total = row.total || 0;
           const pct = (v) => total > 0 ? `${Math.round((v / total) * 100)}%` : "0%";
           return (
-            `<div style="font-weight:600;margin-bottom:4px">${formatWeekRange(row.week_start)}</div>` +
+            `<div style="font-weight:600;margin-bottom:4px">${cadenceLabel(row.cadence_start, row.cadence_end)}</div>` +
             params
               .map((p) =>
                 `<div style="display:flex;gap:12px;justify-content:space-between">` +
@@ -147,7 +135,7 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
         className="flex items-center justify-center rounded border border-dashed border-border bg-bg-sunken text-[13px] text-ink-3"
         style={{ height }}
       >
-        No completed weeks in this period
+        No closed sprints in this period
       </div>
     );
   }
