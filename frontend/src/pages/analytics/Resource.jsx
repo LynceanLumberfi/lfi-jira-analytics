@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByTeam, getAnalyticsStoryTrends, getTeams } from "../../lib/api";
+import { Loader2 } from "lucide-react";
+import { getAnalyticsResource, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { ResourceTrendsChart } from "../../components/charts/ResourceTrendsChart";
+import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
+import { StoriesTable } from "../../components/ui/StoriesTable";
 
 function fmt(v, dp = 0) {
   if (v == null) return "—";
@@ -19,13 +21,6 @@ function weekLabel(weekStart) {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
-function nextMonday(weekStart) {
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 7);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
 function currentIsoWeekMonday() {
   const dt = new Date();
   const day = dt.getDay() || 7;
@@ -33,65 +28,6 @@ function currentIsoWeekMonday() {
   dt.setHours(0, 0, 0, 0);
   const pad = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function DeltaArrow({ direction, tone, prevValue, prevSub }) {
-  const colorClass =
-    tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-ink-4";
-  const Icon = direction === "up" ? ArrowUp : ArrowDown;
-  return (
-    <div className="relative group">
-      <Icon size={15} className={colorClass} strokeWidth={2.5} />
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden
-                      -translate-x-1/2 whitespace-nowrap rounded-md border border-border
-                      bg-bg-elev px-3 py-2 shadow-md group-hover:block">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-ink-3 mb-1">
-          Prev week
-        </p>
-        <p className="text-[13px] font-semibold text-ink">{prevValue}</p>
-        {prevSub && <p className="mt-0.5 text-[11px] text-ink-4">{prevSub}</p>}
-      </div>
-    </div>
-  );
-}
-
-function KpiHero({ label, value, sub, delta }) {
-  return (
-    <Card>
-      <CardBody>
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-            {label}
-          </p>
-          <div className="mt-2 flex items-center gap-1.5">
-            <p className="text-[26px] font-semibold leading-tight text-ink">{value}</p>
-            {delta && (
-              <DeltaArrow
-                direction={delta.direction}
-                tone={delta.tone}
-                prevValue={delta.prevValue}
-                prevSub={delta.prevSub}
-              />
-            )}
-          </div>
-          {sub && <p className="mt-1 text-[12.5px] text-ink-3">{sub}</p>}
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
-
-function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
-  if (curr == null || prev == null) return null;
-  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
-  if (!direction) return null;
-  const isGood = higherIsBetter ? direction === "up" : direction === "down";
-  return {
-    direction,
-    tone: isGood ? "ok" : "warn",
-    prevValue: fmtPrev ?? String(prev),
-    prevSub: prevSub ?? "",
-  };
 }
 
 function safeRate(num, den) {
@@ -111,11 +47,14 @@ export function Resource() {
     : undefined;
   const teamIdsReady = featuredIds !== undefined;
 
-  const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, featuredIds, "has_sprint"],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: featuredIds, has_sprint: true }),
+  const { data: payload, isLoading } = useQuery({
+    queryKey: ["analytics", "resource", featuredIds],
+    queryFn: () => getAnalyticsResource({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
+  const trends = payload?.story_trends;
+  const teamRows = payload?.week_team_breakdown;
+  const weekStories = payload?.week_stories;
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
@@ -123,20 +62,6 @@ export function Resource() {
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
-  const weekResolved = lastWeek ? nextMonday(lastWeek.week_start) : null;
-
-  const { data: teamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Story", featuredIds, lastWeek?.week_start, "has_sprint"],
-    queryFn: () =>
-      getAnalyticsByTeam({
-        issue_type: "Story",
-        team_ids: featuredIds,
-        resolved_since: lastWeek.week_start,
-        resolved_until: weekResolved,
-        has_sprint: true,
-      }),
-    enabled: teamIdsReady && !!lastWeek,
-  });
 
   const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
@@ -214,12 +139,14 @@ export function Resource() {
               label="Story Points Delivered"
               value={storyPoints != null ? fmt(storyPoints) : "—"}
               sub={lastWeek.story_count > 0 ? `${lastWeek.story_count} stories` : "no stories"}
+              tone="accent"
               delta={pointsDelta}
             />
             <KpiHero
               label="Active Resources"
               value={activeResources ?? "—"}
               sub={activeResources != null ? "devs with ≥1 story" : undefined}
+              tone="info"
               delta={devsDelta}
             />
             <KpiHero
@@ -230,6 +157,7 @@ export function Resource() {
                   ? `${fmt(storyPoints)} pts / ${activeResources} devs`
                   : undefined
               }
+              tone="ok"
               delta={pprDelta}
             />
             <KpiHero
@@ -240,6 +168,7 @@ export function Resource() {
                   ? `${lastWeek.hour_logged_count} stories with hours`
                   : "no time data"
               }
+              tone="warn"
               delta={hppDelta}
             />
           </section>
@@ -304,6 +233,22 @@ export function Resource() {
               </CardBody>
             </Card>
           )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Stories delivered — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                {weekStories ? `${weekStories.total} stories` : ""}
+              </span>
+            </CardHeader>
+            <CardBody pad="none">
+              <StoriesTable
+                items={weekStories?.items ?? []}
+                isLoading={!weekStories}
+                showTeamFilter
+              />
+            </CardBody>
+          </Card>
         </>
       )}
     </div>

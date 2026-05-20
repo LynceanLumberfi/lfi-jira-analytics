@@ -1,12 +1,13 @@
-import { useParams, Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByAssignee, getAnalyticsStoryTrends, getIssues, getSprints, getTeams } from "../../lib/api";
+import { Loader2 } from "lucide-react";
+import { getAnalyticsAiAdoption, getSprints, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
 import { DevSkillAdoptionChart } from "../../components/charts/DevSkillAdoptionChart";
 import { StoriesTable } from "../../components/ui/StoriesTable";
+import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 
 function pct(v) {
   if (v == null) return "—";
@@ -22,20 +23,6 @@ function weekLabel(weekStart) {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
-function nextMonday(weekStart) {
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 7);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function weekEndSunday(weekStart) {
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 6);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
 function currentIsoWeekMonday() {
   const dt = new Date();
   const day = dt.getDay() || 7;
@@ -43,70 +30,6 @@ function currentIsoWeekMonday() {
   dt.setHours(0, 0, 0, 0);
   const pad = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function DeltaArrow({ direction, tone, prevValue, prevSub }) {
-  const colorClass =
-    tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-ink-4";
-  const Icon = direction === "up" ? ArrowUp : ArrowDown;
-  return (
-    <div className="relative group">
-      <Icon size={15} className={colorClass} strokeWidth={2.5} />
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden
-                      -translate-x-1/2 whitespace-nowrap rounded-md border border-border
-                      bg-bg-elev px-3 py-2 shadow-md group-hover:block">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-ink-3 mb-1">
-          Prev week
-        </p>
-        <p className="text-[13px] font-semibold text-ink">{prevValue}</p>
-        {prevSub && <p className="mt-0.5 text-[11px] text-ink-4">{prevSub}</p>}
-      </div>
-    </div>
-  );
-}
-
-function KpiHero({ label, value, sub, tone = "default", delta }) {
-  const subTone =
-    tone === "warn" ? "text-warn"
-    : tone === "err" ? "text-err"
-    : tone === "ok" ? "text-ok"
-    : "text-ink-3";
-  return (
-    <Card>
-      <CardBody>
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-            {label}
-          </p>
-          <div className="mt-2 flex items-center gap-1.5">
-            <p className="text-[26px] font-semibold leading-tight text-ink">{value}</p>
-            {delta && (
-              <DeltaArrow
-                direction={delta.direction}
-                tone={delta.tone}
-                prevValue={delta.prevValue}
-                prevSub={delta.prevSub}
-              />
-            )}
-          </div>
-          {sub && <p className={`mt-1 text-[12.5px] ${subTone}`}>{sub}</p>}
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
-
-function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
-  if (curr == null || prev == null) return null;
-  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
-  if (!direction) return null;
-  const isGood = higherIsBetter ? direction === "up" : direction === "down";
-  return {
-    direction,
-    tone: isGood ? "ok" : "warn",
-    prevValue: fmtPrev ?? String(prev),
-    prevSub: prevSub ?? "",
-  };
 }
 
 function safeRate(num, den) {
@@ -126,7 +49,6 @@ export function AiAdoptionTeam() {
     queryFn: getTeams,
     staleTime: 5 * 60 * 1000,
   });
-
   const team = teams?.find((t) => t.id === numTeamId);
   const isKnown = teams !== undefined;
 
@@ -141,13 +63,14 @@ export function AiAdoptionTeam() {
     return <Navigate to="/analytics/ai-adoption" replace />;
   }
 
-  const teamIds = [numTeamId];
-
-  const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, teamIds, "has_sprint", sprintId],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: teamIds, has_sprint: true, sprint_id: sprintId ?? undefined }),
+  const { data: payload, isLoading } = useQuery({
+    queryKey: ["analytics", "ai-adoption", numTeamId, sprintId],
+    queryFn: () => getAnalyticsAiAdoption({ team_id: numTeamId, sprint_id: sprintId ?? undefined }),
     enabled: isKnown,
   });
+  const trends = payload?.story_trends;
+  const weekIssues = payload?.week_stories;
+  const devRows = payload?.week_assignee_breakdown ?? [];
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
@@ -155,52 +78,6 @@ export function AiAdoptionTeam() {
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
-
-  // When a specific sprint is selected via the dropdown, scope to just that
-  // one. Otherwise scope to every sprint whose end_date falls in lastWeek
-  // (Mon-Sun). All grid + dev breakdown queries key off this list.
-  const { data: weekSprints } = useQuery({
-    queryKey: ["sprints", "week", lastWeek?.week_start],
-    queryFn: () =>
-      getSprints({
-        end_from: lastWeek.week_start,
-        end_to: weekEndSunday(lastWeek.week_start),
-      }),
-    enabled: !!lastWeek && sprintId == null,
-    staleTime: 5 * 60 * 1000,
-  });
-  const sprintIdsForWeek = sprintId != null
-    ? [sprintId]
-    : (weekSprints || []).map((s) => s.id);
-
-  const { data: weekIssues } = useQuery({
-    queryKey: ["issues", "week-stories", teamIds, sprintIdsForWeek],
-    queryFn: () =>
-      getIssues({
-        issue_type: "Story",
-        is_done: true,
-        has_sprint: true,
-        team_ids: teamIds,
-        sprint_ids: sprintIdsForWeek,
-        sort: "jira_key",
-        order: "asc",
-        limit: 200,
-      }),
-    enabled: isKnown && sprintIdsForWeek.length > 0,
-  });
-
-  const { data: devRows } = useQuery({
-    queryKey: ["analytics", "by-assignee", teamIds, sprintIdsForWeek],
-    queryFn: () =>
-      getAnalyticsByAssignee({
-        issue_type: "Story",
-        is_done: true,
-        team_ids: teamIds,
-        sprint_ids: sprintIdsForWeek,
-        has_sprint: true,
-      }),
-    enabled: isKnown && sprintIdsForWeek.length > 0,
-  });
 
   function onSprintChange(e) {
     const next = new URLSearchParams(searchParams);
@@ -221,9 +98,7 @@ export function AiAdoptionTeam() {
 
   const completedTrends = (trends || []).filter((w) => w.week_start < currentWeek);
 
-  const prevSub = prevWeek
-    ? weekLabel(prevWeek.week_start)
-    : undefined;
+  const prevSub = prevWeek ? weekLabel(prevWeek.week_start) : undefined;
 
   const storyDelta = computeDelta({
     curr: storyRate,
@@ -290,7 +165,7 @@ export function AiAdoptionTeam() {
                   ? `${lastWeek.skill_count} of ${lastWeek.story_count} stories`
                   : "no stories delivered"
               }
-              tone={storyRate != null && storyRate >= 0.5 ? "ok" : "default"}
+              tone="ok"
               delta={storyDelta}
             />
             <KpiHero
@@ -301,7 +176,7 @@ export function AiAdoptionTeam() {
                   ? `${lastWeek.skill_adopters} of ${lastWeek.active_delivered_devs} active devs`
                   : "no active devs"
               }
-              tone={devRate != null && devRate >= 0.5 ? "ok" : "default"}
+              tone="info"
               delta={devDelta}
             />
           </section>
@@ -320,13 +195,13 @@ export function AiAdoptionTeam() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Developer skill adoption — {weekLabel(lastWeek.week_start)}</CardTitle>
+              <CardTitle>Skill usage by developer — {weekLabel(lastWeek.week_start)}</CardTitle>
               <span className="text-[12.5px] text-ink-3">
-                Stories with Skill per developer · sprint stories only
+                Stories delivered with Skill ÷ stories delivered
               </span>
             </CardHeader>
             <CardBody pad="lg">
-              <DevSkillAdoptionChart data={devRows || []} />
+              <DevSkillAdoptionChart data={devRows} />
             </CardBody>
           </Card>
 
@@ -341,6 +216,7 @@ export function AiAdoptionTeam() {
               <StoriesTable
                 items={weekIssues?.items ?? []}
                 isLoading={!weekIssues}
+                showTeamFilter={false}
               />
             </CardBody>
           </Card>

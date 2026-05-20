@@ -175,7 +175,12 @@ export function QualityTrendsChart({ data = [], height = 280 }) {
           );
         })}
       </div>
-      <ReactECharts option={option} style={{ height, width: "100%" }} />
+      <ReactECharts
+        option={option}
+        style={{ height, width: "100%" }}
+        opts={{ renderer: "svg" }}
+        notMerge
+      />
     </div>
   );
 }

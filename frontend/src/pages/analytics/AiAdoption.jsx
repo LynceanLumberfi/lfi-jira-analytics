@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { getAnalyticsByTeam, getAnalyticsStoryTrends, getIssues, getSprints, getTeams } from "../../lib/api";
+import { Loader2 } from "lucide-react";
+import { getAnalyticsAiAdoption, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { SkillAdoptionTrendsChart } from "../../components/charts/SkillAdoptionTrendsChart";
 import { StoriesTable } from "../../components/ui/StoriesTable";
+import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 
 function pct(v) {
   if (v == null) return "—";
@@ -21,21 +22,6 @@ function weekLabel(weekStart) {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
-function nextMonday(weekStart) {
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 7);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function weekEndSunday(weekStart) {
-  // weekStart is a Monday (YYYY-MM-DD); returns its Sunday (start + 6 days).
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + 6);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
 function currentIsoWeekMonday() {
   const dt = new Date();
   const day = dt.getDay() || 7;
@@ -43,70 +29,6 @@ function currentIsoWeekMonday() {
   dt.setHours(0, 0, 0, 0);
   const pad = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function DeltaArrow({ direction, tone, prevValue, prevSub }) {
-  const colorClass =
-    tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-ink-4";
-  const Icon = direction === "up" ? ArrowUp : ArrowDown;
-  return (
-    <div className="relative group">
-      <Icon size={15} className={colorClass} strokeWidth={2.5} />
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden
-                      -translate-x-1/2 whitespace-nowrap rounded-md border border-border
-                      bg-bg-elev px-3 py-2 shadow-md group-hover:block">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-ink-3 mb-1">
-          Prev week
-        </p>
-        <p className="text-[13px] font-semibold text-ink">{prevValue}</p>
-        {prevSub && <p className="mt-0.5 text-[11px] text-ink-4">{prevSub}</p>}
-      </div>
-    </div>
-  );
-}
-
-function KpiHero({ label, value, sub, tone = "default", delta }) {
-  const subTone =
-    tone === "warn" ? "text-warn"
-    : tone === "err" ? "text-err"
-    : tone === "ok" ? "text-ok"
-    : "text-ink-3";
-  return (
-    <Card>
-      <CardBody>
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-            {label}
-          </p>
-          <div className="mt-2 flex items-center gap-1.5">
-            <p className="text-[26px] font-semibold leading-tight text-ink">{value}</p>
-            {delta && (
-              <DeltaArrow
-                direction={delta.direction}
-                tone={delta.tone}
-                prevValue={delta.prevValue}
-                prevSub={delta.prevSub}
-              />
-            )}
-          </div>
-          {sub && <p className={`mt-1 text-[12.5px] ${subTone}`}>{sub}</p>}
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
-
-function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
-  if (curr == null || prev == null) return null;
-  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
-  if (!direction) return null;
-  const isGood = higherIsBetter ? direction === "up" : direction === "down";
-  return {
-    direction,
-    tone: isGood ? "ok" : "warn",
-    prevValue: fmtPrev ?? String(prev),
-    prevSub: prevSub ?? "",
-  };
 }
 
 function safeRate(num, den) {
@@ -126,11 +48,14 @@ export function AiAdoption() {
     : undefined;
   const teamIdsReady = featuredIds !== undefined;
 
-  const { data: trends, isLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, featuredIds, "has_sprint"],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: featuredIds, has_sprint: true }),
+  const { data: payload, isLoading } = useQuery({
+    queryKey: ["analytics", "ai-adoption", featuredIds],
+    queryFn: () => getAnalyticsAiAdoption({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
+  const trends = payload?.story_trends;
+  const teamRows = payload?.week_team_breakdown;
+  const weekIssues = payload?.week_stories;
 
   const currentWeek = currentIsoWeekMonday();
   const completedWeeks = trends
@@ -138,49 +63,6 @@ export function AiAdoption() {
     : [];
   const lastWeek = completedWeeks[0] ?? null;
   const prevWeek = completedWeeks[1] ?? null;
-
-  // Find every sprint whose end_date falls in lastWeek (Mon-Sun). All other
-  // data on this page is keyed off this sprint_ids list — no resolved_at.
-  const { data: weekSprints } = useQuery({
-    queryKey: ["sprints", "week", lastWeek?.week_start],
-    queryFn: () =>
-      getSprints({
-        end_from: lastWeek.week_start,
-        end_to: weekEndSunday(lastWeek.week_start),
-      }),
-    enabled: !!lastWeek,
-    staleTime: 5 * 60 * 1000,
-  });
-  const weekSprintIds = (weekSprints || []).map((s) => s.id);
-
-  const { data: teamRows } = useQuery({
-    queryKey: ["analytics", "by-team", "Story", featuredIds, weekSprintIds],
-    queryFn: () =>
-      getAnalyticsByTeam({
-        issue_type: "Story",
-        is_done: true,
-        team_ids: featuredIds,
-        sprint_ids: weekSprintIds,
-        has_sprint: true,
-      }),
-    enabled: teamIdsReady && weekSprintIds.length > 0,
-  });
-
-  const { data: weekIssues } = useQuery({
-    queryKey: ["issues", "week-stories", featuredIds, weekSprintIds],
-    queryFn: () =>
-      getIssues({
-        issue_type: "Story",
-        is_done: true,
-        has_sprint: true,
-        team_ids: featuredIds,
-        sprint_ids: weekSprintIds,
-        sort: "jira_key",
-        order: "asc",
-        limit: 200,
-      }),
-    enabled: teamIdsReady && weekSprintIds.length > 0,
-  });
 
   const storyRate = lastWeek ? safeRate(lastWeek.skill_count, lastWeek.story_count) : null;
   const prevStoryRate = prevWeek ? safeRate(prevWeek.skill_count, prevWeek.story_count) : null;
@@ -263,7 +145,7 @@ export function AiAdoption() {
                   ? `${lastWeek.skill_count} of ${lastWeek.story_count} stories`
                   : "no stories delivered"
               }
-              tone={storyRate != null && storyRate >= 0.5 ? "ok" : "default"}
+              tone="ok"
               delta={storyDelta}
             />
             <KpiHero
@@ -274,7 +156,7 @@ export function AiAdoption() {
                   ? `${lastWeek.skill_adopters} of ${lastWeek.active_delivered_devs} active devs`
                   : "no active devs"
               }
-              tone={devRate != null && devRate >= 0.5 ? "ok" : "default"}
+              tone="info"
               delta={devDelta}
             />
             <KpiHero
@@ -294,6 +176,7 @@ export function AiAdoption() {
                   ? `${pct(topStoryTeam.skill_count / topStoryTeam.issue_count)} · ${topStoryTeam.skill_count}/${topStoryTeam.issue_count} stories`
                   : undefined
               }
+              tone="accent"
             />
             <KpiHero
               label="Top team · Developers using Skill"
@@ -312,6 +195,7 @@ export function AiAdoption() {
                   ? `${pct(topDevTeam.skill_adopters / topDevTeam.active_devs)} · ${topDevTeam.skill_adopters}/${topDevTeam.active_devs} devs`
                   : undefined
               }
+              tone="warn"
             />
           </section>
 

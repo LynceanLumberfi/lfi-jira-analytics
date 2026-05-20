@@ -198,6 +198,7 @@ export function StoryTrendsChart({ data = [], height = 280 }) {
     <ReactECharts
       option={option}
       style={{ height, width: "100%" }}
+      opts={{ renderer: "svg" }}
       notMerge
       lazyUpdate={false}
     />

@@ -16,7 +16,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -260,7 +260,10 @@ def _parse_score_json(text: str) -> dict[str, Any]:
 
 
 def _reap_stale_in_progress(
-    db: Session, *, threshold_minutes: int = _STALE_IN_PROGRESS_MINUTES
+    db: Session,
+    *,
+    threshold_minutes: int = _STALE_IN_PROGRESS_MINUTES,
+    sprint_start_date: date | None = None,
 ) -> int:
     """Reset rows stuck in `in_progress` back to `pending`.
 
@@ -271,10 +274,33 @@ def _reap_stale_in_progress(
     is older than `threshold_minutes` is considered stale. In practice the
     backend lifespan starts cleanly after a restart, so any leftover claim is
     older than the next sync touching the same issue.
+
+    When `sprint_start_date` is set, the reaper is scoped to rows whose issue
+    is bucketed to that date (max sprint start_date::date = target). This lets
+    parallel workers on different dates safely co-exist — Worker B's reaper
+    can't reset Worker A's in-flight claims because they live in different
+    buckets.
     """
+    bucket_filter = ""
+    params: dict[str, Any] = {"mins": threshold_minutes}
+    if sprint_start_date is not None:
+        bucket_filter = """
+               AND issue_id IN (
+                   SELECT i.id FROM issues i
+                    WHERE (
+                        SELECT max(sp.start_date::date)
+                          FROM issue_sprints iss
+                          JOIN sprints sp ON sp.id = iss.sprint_id
+                         WHERE iss.issue_id = i.id
+                           AND sp.start_date IS NOT NULL
+                    ) = :sprint_start_date
+               )
+        """
+        params["sprint_start_date"] = sprint_start_date
+
     reaped = db.execute(
         text(
-            """
+            f"""
             UPDATE issue_ai_scores
                SET scoring_status = 'pending'
              WHERE scoring_status = 'in_progress'
@@ -283,9 +309,10 @@ def _reap_stale_in_progress(
                    SELECT i.id FROM issues i
                     WHERE i.synced_at < now() - make_interval(mins => :mins)
                )
+               {bucket_filter}
             """
         ),
-        {"mins": threshold_minutes},
+        params,
     ).rowcount or 0
     if reaped:
         db.commit()
@@ -293,15 +320,47 @@ def _reap_stale_in_progress(
     return reaped
 
 
-def _claim_pending(db: Session, limit: int) -> list[tuple[Issue, IssueAIScore]]:
+def _claim_pending(
+    db: Session,
+    limit: int,
+    *,
+    sprint_start_date: date | None = None,
+) -> list[tuple[Issue, IssueAIScore]]:
     """Atomically claim up to `limit` pending Story-type rows by flipping them
     to `in_progress` in a single SELECT FOR UPDATE SKIP LOCKED + UPDATE…
-    RETURNING. Two workers running concurrently get disjoint sets."""
+    RETURNING. Two workers running concurrently get disjoint sets.
+
+    When `sprint_start_date` is set, an issue is "bucketed" to the date its
+    *latest* (max) sprint start_date falls on. Only issues whose bucket equals
+    the target date are eligible. Each issue belongs to exactly one bucket,
+    so parallel workers passing different dates get strictly disjoint sets
+    — carry-over stories (which appear in many sprints) are claimed by the
+    worker whose date matches the issue's most-recent sprint.
+    """
+    sprint_filter = ""
+    params: dict[str, Any] = {
+        "limit": limit,
+        "types": list(_SCORED_ISSUE_TYPES),
+        "min_sp": MIN_STORY_POINTS_FOR_SCORING,
+        "statuses": list(ELIGIBLE_SCORING_STATUSES),
+    }
+    if sprint_start_date is not None:
+        sprint_filter = """
+                        AND (
+                            SELECT max(sp2.start_date::date)
+                              FROM issue_sprints iss2
+                              JOIN sprints sp2 ON sp2.id = iss2.sprint_id
+                             WHERE iss2.issue_id = i.id
+                               AND sp2.start_date IS NOT NULL
+                        ) = :sprint_start_date
+        """
+        params["sprint_start_date"] = sprint_start_date
+
     claimed_ids = [
         row[0]
         for row in db.execute(
             text(
-                """
+                f"""
                 UPDATE issue_ai_scores
                    SET scoring_status = 'in_progress'
                  WHERE id IN (
@@ -321,6 +380,7 @@ def _claim_pending(db: Session, limit: int) -> list[tuple[Issue, IssueAIScore]]:
                         AND coalesce(i.summary, '') !~* '^\\[\\s*qa(\\s|\\]|:|-|$)'
                         AND (i.story_points IS NULL OR i.story_points > :min_sp)
                         AND i.status = ANY(:statuses)
+                        {sprint_filter}
                       ORDER BY ls.end_date DESC NULLS LAST,
                                i.updated_at DESC NULLS LAST,
                                i.id DESC
@@ -330,12 +390,7 @@ def _claim_pending(db: Session, limit: int) -> list[tuple[Issue, IssueAIScore]]:
                 RETURNING id
                 """
             ),
-            {
-                "limit": limit,
-                "types": list(_SCORED_ISSUE_TYPES),
-                "min_sp": MIN_STORY_POINTS_FOR_SCORING,
-                "statuses": list(ELIGIBLE_SCORING_STATUSES),
-            },
+            params,
         ).all()
     ]
     db.commit()
@@ -580,6 +635,7 @@ def score_pending(
     timeout: int | None = None,
     progress: Any = None,
     sync_state_id: int | None = None,
+    sprint_start_date: date | None = None,
 ) -> ScoreSummary:
     """Score up to `limit` pending Story-type issues. One claude CLI call per
     issue. Failures are recorded in `failed_records` and flip
@@ -589,13 +645,16 @@ def score_pending(
     `items_processed` per row, and closes it with `{scored, failed, no_description}`
     metrics. The API endpoint creates a sync_state and passes its id so the
     UI can poll progress at `GET /api/sync/state/{id}`.
+
+    When `sprint_start_date` is set, the batch is restricted to issues
+    belonging to sprints whose `start_date::date` matches (UTC).
     """
     from app.models.sync_phase import SyncPhase
     from app.services.phase_service import close_phase, open_phase, tick
 
     summary = ScoreSummary()
-    _reap_stale_in_progress(db)
-    rows = _claim_pending(db, limit)
+    _reap_stale_in_progress(db, sprint_start_date=sprint_start_date)
+    rows = _claim_pending(db, limit, sprint_start_date=sprint_start_date)
     if not rows:
         logger.info("scoring: no pending Story-type issues")
         if sync_state_id is not None:

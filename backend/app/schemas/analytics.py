@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
+from app.schemas.issues import IssueListOut
+
 
 class TeamAggregateOut(BaseModel):
     team_id: int | None
@@ -113,3 +115,40 @@ class IssueTypeTrendOut(BaseModel):
     qa_bugs: int = 0
     tasks: int
     total: int
+
+
+# ---- Per-tab composite responses ----
+
+
+class OverviewResponseOut(BaseModel):
+    story_trends: list[StoryTrendOut]
+    issue_type_trends: list[IssueTypeTrendOut]
+
+
+class AiAdoptionResponseOut(BaseModel):
+    story_trends: list[StoryTrendOut]
+    latest_week_start: date | None
+    week_sprint_ids: list[int]
+    week_team_breakdown: list[TeamAggregateOut]
+    week_assignee_breakdown: list[AssigneeAggregateOut]
+    week_stories: IssueListOut
+
+
+class ResourceResponseOut(BaseModel):
+    story_trends: list[StoryTrendOut]
+    latest_week_start: date | None
+    week_team_breakdown: list[TeamAggregateOut]
+    week_assignee_breakdown: list[AssigneeAggregateOut]
+    week_stories: IssueListOut
+
+
+class QualityWeekTeamBreakdown(BaseModel):
+    story: list[TeamAggregateOut]
+    bug: list[TeamAggregateOut]
+    task: list[TeamAggregateOut]
+
+
+class QualityResponseOut(BaseModel):
+    issue_type_trends: list[IssueTypeTrendOut]
+    latest_week_start: date | None
+    week_team_breakdown: QualityWeekTeamBreakdown

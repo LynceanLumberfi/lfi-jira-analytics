@@ -65,5 +65,12 @@ export function TestCoverageWeeklyChart({ data }) {
     ],
   };
 
-  return <ReactECharts option={option} style={{ height: 220 }} />;
+  return (
+    <ReactECharts
+      option={option}
+      style={{ height: 220 }}
+      opts={{ renderer: "svg" }}
+      notMerge
+    />
+  );
 }

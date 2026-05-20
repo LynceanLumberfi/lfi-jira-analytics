@@ -1,69 +1,40 @@
-import { useState } from "react";
-import { useParams, Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import {
-  getAnalyticsByAssignee,
-  getAnalyticsByTeam,
-  getAnalyticsSummary,
-  getIssues,
-  getSprints,
-  getTeams,
-} from "../../lib/api";
+import { getAnalyticsOverview, getSprints, getTeams } from "../../lib/api";
+import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Pill } from "../../components/ui/Pill";
-import { Table, TBody, TD, TH, THead, TR } from "../../components/ui/Table";
-import { Avatar } from "../../components/ui/Avatar";
-import { ScoreBar } from "../../components/charts/ScoreBar";
-import { IssueDrawer } from "../../components/ui/IssueDrawer";
+import { IssueTypeTrendsChart } from "../../components/charts/IssueTypeTrendsChart";
+import { StoryTrendsChart } from "../../components/charts/StoryTrendsChart";
+import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 
 function pct(v) {
   if (v == null) return "—";
   return `${Math.round(v * 100)}%`;
 }
 
-function KpiTile({ label, value, sub, tone = "default" }) {
-  const valueTone =
-    tone === "warn"
-      ? "text-warn"
-      : tone === "err"
-        ? "text-err"
-        : tone === "ok"
-          ? "text-ok"
-          : "text-ink";
-  return (
-    <Card>
-      <CardBody>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-          {label}
-        </p>
-        <p className={`mt-2 text-[26px] font-semibold leading-tight ${valueTone}`}>
-          {value}
-        </p>
-        {sub && <p className="mt-1 text-[12.5px] text-ink-3">{sub}</p>}
-      </CardBody>
-    </Card>
-  );
+function weekLabel(weekStart) {
+  if (!weekStart) return "";
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 6);
+  const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
-function SortTH({ col, sortCol, sortDir, onSort, className = "", children }) {
-  const active = sortCol === col;
-  return (
-    <TH
-      className={`cursor-pointer select-none whitespace-nowrap ${className}`}
-      onClick={() => onSort(col)}
-    >
-      {children}{" "}
-      <span className="font-normal opacity-50">
-        {active ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
-      </span>
-    </TH>
-  );
+function currentIsoWeekMonday() {
+  const dt = new Date();
+  const day = dt.getDay() || 7;
+  dt.setDate(dt.getDate() - day + 1);
+  dt.setHours(0, 0, 0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
+
 
 export function TeamPage() {
   const { teamId } = useParams();
-  const teamIdNum = Number(teamId);
+  const numTeamId = Number(teamId);
   const [searchParams, setSearchParams] = useSearchParams();
   const sprintIdParam = searchParams.get("sprint_id");
   const sprintId = sprintIdParam ? Number(sprintIdParam) : null;
@@ -73,38 +44,28 @@ export function TeamPage() {
     queryFn: getTeams,
     staleTime: 5 * 60 * 1000,
   });
-  const team = teams?.find((t) => t.id === teamIdNum);
+  const team = teams?.find((t) => t.id === numTeamId);
+  const isKnown = teams !== undefined;
 
   const { data: sprints } = useQuery({
-    queryKey: ["sprints", { team_id: teamIdNum }],
-    queryFn: () => getSprints({ team_id: teamIdNum }),
-    enabled: !Number.isNaN(teamIdNum),
+    queryKey: ["sprints", { team_id: numTeamId }],
+    queryFn: () => getSprints({ team_id: numTeamId }),
+    enabled: !Number.isNaN(numTeamId),
     staleTime: 5 * 60 * 1000,
   });
 
-  const filter = { team_id: teamIdNum, sprint_id: sprintId ?? undefined };
+  if (Number.isNaN(numTeamId)) return <Navigate to="/analytics" replace />;
+  if (isKnown && (!team || !isFeaturedTeam(team.name))) {
+    return <Navigate to="/analytics" replace />;
+  }
 
-  const { data: summary } = useQuery({
-    queryKey: ["analytics", "summary", filter],
-    queryFn: () => getAnalyticsSummary(filter),
-    enabled: !Number.isNaN(teamIdNum),
+  const { data: payload, isLoading: oLoading } = useQuery({
+    queryKey: ["analytics", "overview", numTeamId, sprintId],
+    queryFn: () => getAnalyticsOverview({ team_id: numTeamId, sprint_id: sprintId ?? undefined }),
+    enabled: isKnown,
   });
-  const { data: teamAgg } = useQuery({
-    queryKey: ["analytics", "by-team", filter],
-    queryFn: () => getAnalyticsByTeam(filter),
-    enabled: !Number.isNaN(teamIdNum),
-  });
-  const { data: byAssignee, isLoading: aLoading } = useQuery({
-    queryKey: ["analytics", "by-assignee", filter],
-    queryFn: () => getAnalyticsByAssignee(filter),
-    enabled: !Number.isNaN(teamIdNum),
-  });
-  const { data: issues, isLoading: iLoading } = useQuery({
-    queryKey: ["issues", { ...filter, limit: 50 }],
-    queryFn: () =>
-      getIssues({ ...filter, limit: 50, sort: "updated_at", order: "desc" }),
-    enabled: !Number.isNaN(teamIdNum),
-  });
+  const trends = payload?.story_trends;
+  const issueTypes = payload?.issue_type_trends;
 
   function onSprintChange(e) {
     const next = new URLSearchParams(searchParams);
@@ -113,56 +74,70 @@ export function TeamPage() {
     setSearchParams(next, { replace: true });
   }
 
-  const [sortCol, setSortCol] = useState(null);
-  const [sortDir, setSortDir] = useState("asc");
-  const [colFilters, setColFilters] = useState({ key: "", type: "", summary: "", assignee: "", sp: "", quality: "" });
-  const [selectedKey, setSelectedKey] = useState(null);
+  const currentWeek = currentIsoWeekMonday();
+  const activeWeeks = trends ? [...trends].reverse().filter((w) => w.week_start < currentWeek) : [];
+  const lastActiveWeek = activeWeeks[0] ?? null;
+  const prevActiveWeek = activeWeeks[1] ?? null;
 
-  function onSortClick(col) {
-    if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortCol(col); setSortDir("asc"); }
-  }
+  const spSpark    = (trends || []).map((w) => w.story_points ?? 0);
+  const skillSpark = (trends || []).map((w) => w.skill_adoption_rate != null ? w.skill_adoption_rate * 100 : 0);
+  const pprSpark   = (trends || []).map((w) => w.points_per_active_resource ?? 0);
+  const hppSpark   = (trends || []).map((w) => w.hours_per_point ?? 0);
 
-  const allItems = issues?.items ?? [];
-  const uniqueTypes = [...new Set(allItems.map((it) => it.issue_type).filter(Boolean))].sort();
-  const uniqueAssignees = [...new Set(allItems.map((it) => it.assignee_name).filter(Boolean))].sort();
+  const noData = !oLoading && !lastActiveWeek;
 
-  let displayedIssues = allItems;
-  if (colFilters.key) displayedIssues = displayedIssues.filter((it) => it.jira_key?.toLowerCase().includes(colFilters.key.toLowerCase()));
-  if (colFilters.type) displayedIssues = displayedIssues.filter((it) => it.issue_type === colFilters.type);
-  if (colFilters.summary) displayedIssues = displayedIssues.filter((it) => it.summary?.toLowerCase().includes(colFilters.summary.toLowerCase()));
-  if (colFilters.assignee) displayedIssues = displayedIssues.filter((it) => it.assignee_name === colFilters.assignee);
-  if (colFilters.sp !== "") displayedIssues = displayedIssues.filter((it) => (it.story_points ?? 0) >= Number(colFilters.sp));
-  if (colFilters.quality !== "") displayedIssues = displayedIssues.filter((it) => it.quality_score != null && it.quality_score >= Number(colFilters.quality));
-  if (sortCol) {
-    displayedIssues = [...displayedIssues].sort((a, b) => {
-      const av = a[sortCol], bv = b[sortCol];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
-      if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
-      return sortDir === "asc" ? av - bv : bv - av;
-    });
-  }
+  const prevSub = prevActiveWeek
+    ? `${weekLabel(prevActiveWeek.week_start)} · ${prevActiveWeek.story_count} stories`
+    : undefined;
 
-  if (Number.isNaN(teamIdNum)) return <Navigate to="/analytics" replace />;
+  const spDelta = computeDelta({
+    curr: lastActiveWeek?.story_points,
+    prev: prevActiveWeek?.story_points,
+    higherIsBetter: true,
+    fmtPrev: prevActiveWeek ? `${Math.round(prevActiveWeek.story_points)} pts` : undefined,
+    prevSub,
+  });
 
-  const agg = teamAgg?.[0];
-  const totalIssues = summary?.total_issues ?? agg?.issue_count ?? 0;
-  const scoredCount = summary?.scored_issues ?? agg?.scored_count ?? 0;
-  const noDescCount = summary?.no_description_count ?? agg?.no_description_count ?? 0;
-  const noDescPct = totalIssues > 0 ? noDescCount / totalIssues : null;
+  const skillDelta = computeDelta({
+    curr: lastActiveWeek?.skill_adoption_rate,
+    prev: prevActiveWeek?.skill_adoption_rate,
+    higherIsBetter: true,
+    fmtPrev: prevActiveWeek?.skill_adoption_rate != null ? pct(prevActiveWeek.skill_adoption_rate) : undefined,
+    prevSub,
+  });
+
+  const pprDelta = computeDelta({
+    curr: lastActiveWeek?.points_per_active_resource,
+    prev: prevActiveWeek?.points_per_active_resource,
+    higherIsBetter: true,
+    fmtPrev: prevActiveWeek?.points_per_active_resource != null
+      ? `${prevActiveWeek.points_per_active_resource.toFixed(1)} pts`
+      : undefined,
+    prevSub,
+  });
+
+  const hppDelta = computeDelta({
+    curr: lastActiveWeek?.hours_per_point,
+    prev: prevActiveWeek?.hours_per_point,
+    higherIsBetter: false,
+    fmtPrev: prevActiveWeek?.hours_per_point != null
+      ? `${prevActiveWeek.hours_per_point.toFixed(1)} h`
+      : undefined,
+    prevSub,
+  });
+
+  const teamName = team?.name ?? `Team #${teamId}`;
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-end justify-between">
+      <header className="flex items-end justify-between gap-4">
         <div>
-          <h2 className="text-[18px] font-semibold text-ink">
-            {team?.name || `Team #${teamIdNum}`}
-          </h2>
-          <p className="text-[12.5px] text-ink-3">
-            {totalIssues} issues · {scoredCount} scored
-          </p>
+          <h2 className="text-[18px] font-semibold text-ink">{teamName}</h2>
+          {lastActiveWeek && (
+            <p className="mt-1 text-[13px] text-ink-3">
+              Sprint week <span className="font-medium text-ink-2">{weekLabel(lastActiveWeek.week_start)}</span>.
+            </p>
+          )}
         </div>
         {sprints?.length > 0 && (
           <select
@@ -178,312 +153,102 @@ export function TeamPage() {
             ))}
           </select>
         )}
-      </div>
+      </header>
 
-      {/* KPIs */}
+      {/* KPIs — last completed Story week */}
       <section className="grid grid-cols-4 gap-4">
-        <KpiTile
-          label="Avg quality"
-          value={
-            summary?.avg_quality != null ? summary.avg_quality.toFixed(1) : "—"
-          }
-          sub="0–5 score"
-          tone={
-            summary?.avg_quality == null
-              ? "default"
-              : summary.avg_quality >= 3.5
-                ? "ok"
-                : summary.avg_quality >= 2.5
-                  ? "warn"
-                  : "err"
-          }
-        />
-        <KpiTile
-          label="AI plan detected"
-          value={pct(summary?.avg_ai_plan_pct)}
+        <KpiHero
+          label="Story Points"
+          value={lastActiveWeek ? `${Math.round(lastActiveWeek.story_points)} pts` : "—"}
           sub={
-            summary?.scored_issues
-              ? `among ${summary.scored_issues} scored issues`
-              : "no scored issues yet"
+            noData ? "no completed stories yet" :
+            lastActiveWeek ? `${lastActiveWeek.story_count} stories · ${weekLabel(lastActiveWeek.week_start)}` : ""
           }
-          tone={
-            summary?.avg_ai_plan_pct == null
-              ? "default"
-              : summary.avg_ai_plan_pct >= 0.5
-                ? "ok"
-                : "default"
-          }
+          tone="accent"
+          spark={spSpark}
+          sparkTone="accent"
+          delta={spDelta}
         />
-        <KpiTile
-          label="Skill usage"
-          value={pct(summary?.avg_skill_pct)}
+        <KpiHero
+          label="Skill Adoption"
+          value={lastActiveWeek?.skill_adoption_rate != null ? pct(lastActiveWeek.skill_adoption_rate) : "—"}
           sub={
-            agg?.skill_count != null
-              ? `${agg.skill_count} issues mentioned a skill`
-              : ""
+            lastActiveWeek?.scored_count
+              ? `${lastActiveWeek.scored_count} stories scored`
+              : noData ? "no scored stories yet" : ""
           }
+          tone="ok"
+          spark={skillSpark}
+          sparkTone="ok"
+          delta={skillDelta}
         />
-        <KpiTile
-          label="No description"
-          value={pct(noDescPct)}
-          sub={`${noDescCount} of ${totalIssues} issues`}
-          tone={
-            noDescPct == null ? "default" : noDescPct >= 0.2 ? "warn" : "default"
+        <KpiHero
+          label="Pts / Resource"
+          value={lastActiveWeek?.points_per_active_resource != null ? `${lastActiveWeek.points_per_active_resource.toFixed(1)} pts` : "—"}
+          sub={
+            lastActiveWeek?.active_resources
+              ? `${lastActiveWeek.active_resources} active dev${lastActiveWeek.active_resources !== 1 ? "s" : ""}`
+              : noData ? "no data yet" : ""
           }
+          tone="info"
+          spark={pprSpark}
+          sparkTone="info"
+          delta={pprDelta}
+        />
+        <KpiHero
+          label="Hours / Story Point"
+          value={lastActiveWeek?.hours_per_point != null ? `${lastActiveWeek.hours_per_point.toFixed(1)} h` : "—"}
+          sub={
+            lastActiveWeek?.hour_logged_count
+              ? `${lastActiveWeek.hour_logged_count} stories w/ time logged`
+              : noData ? "no time tracking data" : ""
+          }
+          tone="warn"
+          spark={hppSpark}
+          sparkTone="warn"
+          delta={hppDelta}
         />
       </section>
 
-      {/* By assignee */}
       <Card>
         <CardHeader>
-          <CardTitle>By assignee</CardTitle>
+          <CardTitle>Story trends — last 12 weeks</CardTitle>
           <span className="text-[12.5px] text-ink-3">
-            {byAssignee?.length ?? 0} people
+            Throughput, efficiency, and AI-skill coverage for completed Stories
           </span>
         </CardHeader>
-        <CardBody pad="sm">
-          {aLoading ? (
-            <Loading />
-          ) : !byAssignee?.length ? (
-            <Empty text="No assignees with promoted issues yet." />
+        <CardBody pad="lg">
+          {oLoading ? (
+            <LoadingRow />
           ) : (
-            <Table className="rounded-none border-0">
-              <THead>
-                <TR>
-                  <TH>Assignee</TH>
-                  <TH className="text-right">Issues</TH>
-                  <TH className="text-right">Points</TH>
-                  <TH>Avg quality</TH>
-                  <TH className="text-right">AI plan</TH>
-                  <TH className="text-right">Skill</TH>
-                </TR>
-              </THead>
-              <TBody>
-                {byAssignee.map((a) => {
-                  const aiPct =
-                    a.scored_count > 0 ? a.ai_plan_count / a.scored_count : null;
-                  const skillPct =
-                    a.scored_count > 0 ? a.skill_count / a.scored_count : null;
-                  return (
-                    <TR key={a.assignee_id ?? `nobody-${a.assignee_name}`}>
-                      <TD>
-                        <span className="inline-flex items-center gap-2">
-                          <Avatar
-                            name={a.assignee_name || "Unassigned"}
-                            size={22}
-                          />
-                          <span className="text-[13px] text-ink">
-                            {a.assignee_name || (
-                              <span className="text-ink-4">Unassigned</span>
-                            )}
-                          </span>
-                        </span>
-                      </TD>
-                      <TD className="text-right font-mono text-[12px]">
-                        {a.issue_count}
-                      </TD>
-                      <TD className="text-right font-mono text-[12px]">
-                        {a.total_story_points
-                          ? Math.round(a.total_story_points)
-                          : 0}
-                      </TD>
-                      <TD>
-                        <ScoreBar value={a.avg_quality} />
-                      </TD>
-                      <TD className="text-right font-mono text-[12px]">
-                        {aiPct == null ? "—" : pct(aiPct)}
-                      </TD>
-                      <TD className="text-right font-mono text-[12px]">
-                        {skillPct == null ? "—" : pct(skillPct)}
-                      </TD>
-                    </TR>
-                  );
-                })}
-              </TBody>
-            </Table>
+            <StoryTrendsChart data={trends || []} />
           )}
         </CardBody>
       </Card>
 
-      {/* Tickets */}
       <Card>
         <CardHeader>
-          <CardTitle>Tickets</CardTitle>
+          <CardTitle>Completed by type — last 12 weeks</CardTitle>
           <span className="text-[12.5px] text-ink-3">
-            Showing {displayedIssues.length} of {issues?.total ?? 0}
+            Stories · Bugs · Tasks shipped per week
           </span>
         </CardHeader>
-        <CardBody pad="sm">
-          {iLoading ? (
-            <Loading />
-          ) : !allItems.length ? (
-            <Empty text="No promoted tickets yet for this team." />
+        <CardBody pad="lg">
+          {oLoading ? (
+            <LoadingRow />
           ) : (
-            <Table className="rounded-none border-0">
-              <THead>
-                <TR>
-                  <SortTH col="jira_key" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick}>Key</SortTH>
-                  <SortTH col="issue_type" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick}>Type</SortTH>
-                  <SortTH col="summary" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick}>Summary</SortTH>
-                  <SortTH col="assignee_name" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick}>Assignee</SortTH>
-                  <SortTH col="story_points" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick} className="text-right">SP</SortTH>
-                  <SortTH col="quality_score" sortCol={sortCol} sortDir={sortDir} onSort={onSortClick}>Quality</SortTH>
-                  <TH>Skill</TH>
-                  <TH>AI</TH>
-                  <TH>Status</TH>
-                </TR>
-                <TR>
-                  <TH className="py-1">
-                    <input
-                      className="w-full rounded border border-border bg-bg px-1.5 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink placeholder:text-ink-4"
-                      placeholder="Filter…"
-                      value={colFilters.key}
-                      onChange={(e) => setColFilters((f) => ({ ...f, key: e.target.value }))}
-                    />
-                  </TH>
-                  <TH className="py-1">
-                    <select
-                      className="w-full rounded border border-border bg-bg px-1 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink"
-                      value={colFilters.type}
-                      onChange={(e) => setColFilters((f) => ({ ...f, type: e.target.value }))}
-                    >
-                      <option value="">All</option>
-                      {uniqueTypes.map((t) => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </TH>
-                  <TH className="py-1">
-                    <input
-                      className="w-full rounded border border-border bg-bg px-1.5 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink placeholder:text-ink-4"
-                      placeholder="Filter…"
-                      value={colFilters.summary}
-                      onChange={(e) => setColFilters((f) => ({ ...f, summary: e.target.value }))}
-                    />
-                  </TH>
-                  <TH className="py-1">
-                    <select
-                      className="w-full rounded border border-border bg-bg px-1 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink"
-                      value={colFilters.assignee}
-                      onChange={(e) => setColFilters((f) => ({ ...f, assignee: e.target.value }))}
-                    >
-                      <option value="">All</option>
-                      {uniqueAssignees.map((a) => <option key={a} value={a}>{a}</option>)}
-                    </select>
-                  </TH>
-                  <TH className="py-1">
-                    <input
-                      type="number"
-                      min="0"
-                      className="w-full rounded border border-border bg-bg px-1.5 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink placeholder:text-ink-4"
-                      placeholder="≥"
-                      value={colFilters.sp}
-                      onChange={(e) => setColFilters((f) => ({ ...f, sp: e.target.value }))}
-                    />
-                  </TH>
-                  <TH className="py-1">
-                    <input
-                      type="number"
-                      min="0"
-                      max="5"
-                      step="0.1"
-                      className="w-full rounded border border-border bg-bg px-1.5 py-0.5 text-[11px] font-normal normal-case tracking-normal text-ink placeholder:text-ink-4"
-                      placeholder="≥"
-                      value={colFilters.quality}
-                      onChange={(e) => setColFilters((f) => ({ ...f, quality: e.target.value }))}
-                    />
-                  </TH>
-                  <TH /><TH /><TH />
-                </TR>
-              </THead>
-              <TBody>
-                {displayedIssues.length === 0 ? (
-                  <TR>
-                    <TD colSpan={9} className="py-6 text-center text-[13px] text-ink-4">
-                      No tickets match the current filters.
-                    </TD>
-                  </TR>
-                ) : displayedIssues.map((it) => (
-                  <TR key={it.issue_id}>
-                    <TD>
-                      <button
-                        className="font-mono text-[12px] font-semibold text-accent hover:underline"
-                        onClick={() => setSelectedKey(it.jira_key)}
-                      >
-                        {it.jira_key}
-                      </button>
-                    </TD>
-                    <TD>
-                      <Pill tone="default">{it.issue_type || "—"}</Pill>
-                    </TD>
-                    <TD className="max-w-[360px]">
-                      <span className="line-clamp-1 text-[13px] text-ink-2">
-                        {it.summary}
-                      </span>
-                    </TD>
-                    <TD>
-                      <span className="text-[12.5px] text-ink-2">
-                        {it.assignee_name || (
-                          <span className="text-ink-4">—</span>
-                        )}
-                      </span>
-                    </TD>
-                    <TD className="text-right font-mono text-[12px]">
-                      {it.story_points ?? "—"}
-                    </TD>
-                    <TD>
-                      {it.quality_score != null ? (
-                        <ScoreBar value={it.quality_score} width={48} showValue />
-                      ) : (
-                        <span className="text-[12px] text-ink-4">—</span>
-                      )}
-                    </TD>
-                    <TD>
-                      {it.quality_score == null ? (
-                        <span className="text-[12px] text-ink-4">NS</span>
-                      ) : it.skill_usage_detected ? (
-                        <span className="text-[12px] text-ink-2">{it.skill_name || "yes"}</span>
-                      ) : (
-                        <span className="text-[12px] text-ink-4">—</span>
-                      )}
-                    </TD>
-                    <TD>
-                      {it.ai_plan_detected ? (
-                        <Pill tone="ok">plan</Pill>
-                      ) : it.quality_score != null ? (
-                        <Pill tone="default">no</Pill>
-                      ) : (
-                        <span className="text-[12px] text-ink-4">—</span>
-                      )}
-                    </TD>
-                    <TD>
-                      <Pill tone={it.is_done ? "ok" : "default"}>
-                        {it.status || "—"}
-                      </Pill>
-                    </TD>
-                  </TR>
-                ))}
-              </TBody>
-            </Table>
+            <IssueTypeTrendsChart data={issueTypes || []} />
           )}
         </CardBody>
       </Card>
-
-      <IssueDrawer issueKey={selectedKey} onClose={() => setSelectedKey(null)} />
     </div>
   );
 }
 
-function Loading() {
+function LoadingRow() {
   return (
-    <div className="flex items-center gap-2 px-3 py-4 text-[13px] text-ink-3">
+    <div className="flex items-center gap-2 text-[13px] text-ink-3">
       <Loader2 size={14} className="animate-spin" /> Loading…
-    </div>
-  );
-}
-
-function Empty({ text }) {
-  return (
-    <div className="rounded border border-dashed border-border bg-bg-sunken py-8 text-center text-[13px] text-ink-3">
-      {text}
     </div>
   );
 }

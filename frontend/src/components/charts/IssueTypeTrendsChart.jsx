@@ -137,6 +137,7 @@ export function IssueTypeTrendsChart({ data = [], height = 220 }) {
     <ReactECharts
       option={option}
       style={{ height, width: "100%" }}
+      opts={{ renderer: "svg" }}
       notMerge
       lazyUpdate={false}
     />

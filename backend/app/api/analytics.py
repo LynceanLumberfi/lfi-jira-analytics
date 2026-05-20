@@ -3,20 +3,32 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.analytics import (
+    AiAdoptionResponseOut,
     AssigneeAggregateOut,
     CostSummaryOut,
     EpicProgressOut,
     IssueTypeTrendOut,
+    OverviewResponseOut,
     OverviewSummaryOut,
+    QualityResponseOut,
+    ResourceResponseOut,
     SprintVelocityOut,
     StoryTrendOut,
     TeamAggregateOut,
 )
 from app.services import analytics_service
+from app.services.analytics import (
+    ai_adoption_service,
+    overview_service,
+    quality_service,
+    resource_service,
+)
+from app.services.analytics._helpers import excluded_team_ids
 from app.services.analytics_service import AnalyticsFilters
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -140,6 +152,138 @@ def summary(
     db: Session = Depends(get_db),
 ) -> OverviewSummaryOut:
     return OverviewSummaryOut(**analytics_service.overview_summary(db, filters))
+
+
+# ---- Per-tab landing-page endpoints ----
+
+
+_NO_MATCH_SENTINEL: list[int] = [-1]
+
+
+def _resolve_team_ids(
+    team_id: int | None, team_ids: list[int], db: Session
+) -> list[int]:
+    """Merge ?team_id=N and ?team_ids=A&team_ids=B into a single list, then
+    strip teams that are globally excluded from analytics tab endpoints
+    (`EXCLUDED_TEAM_NAMES` in `_helpers.py`).
+
+    When the caller passed nothing, resolve to every non-excluded team ID so
+    downstream queries get an explicit whitelist (and Integration etc. can
+    never leak in via a None / "no filter" code path). When the caller's
+    whitelist becomes empty after exclusion, return a sentinel that matches no
+    real team (so the IN-clause returns zero rows instead of silently widening
+    to all teams).
+    """
+    effective = list(team_ids or [])
+    if team_id is not None and team_id not in effective:
+        effective.append(team_id)
+    excluded = excluded_team_ids(db)
+    if effective:
+        filtered = [t for t in effective if t not in excluded]
+        return filtered or _NO_MATCH_SENTINEL
+    rows = db.execute(
+        text("SELECT id FROM teams WHERE NOT (id = ANY(:excluded))"),
+        {"excluded": list(excluded) if excluded else [-1]},
+    ).all()
+    all_ids = [int(r[0]) for r in rows]
+    return all_ids or _NO_MATCH_SENTINEL
+
+
+@router.get("/overview", response_model=OverviewResponseOut)
+def overview(
+    team_id: int | None = Query(None),
+    team_ids: list[int] = Query(default=[]),
+    sprint_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> OverviewResponseOut:
+    payload = overview_service.get_overview(
+        db,
+        team_ids=_resolve_team_ids(team_id, team_ids, db),
+        sprint_id=sprint_id,
+    )
+    return OverviewResponseOut(
+        story_trends=[StoryTrendOut(**_coerce(r)) for r in payload["story_trends"]],
+        issue_type_trends=[
+            IssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
+        ],
+    )
+
+
+@router.get("/ai-adoption", response_model=AiAdoptionResponseOut)
+def ai_adoption(
+    team_id: int | None = Query(None),
+    team_ids: list[int] = Query(default=[]),
+    sprint_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> AiAdoptionResponseOut:
+    payload = ai_adoption_service.get_ai_adoption(
+        db,
+        team_ids=_resolve_team_ids(team_id, team_ids, db),
+        sprint_id=sprint_id,
+    )
+    return AiAdoptionResponseOut(
+        story_trends=[StoryTrendOut(**_coerce(r)) for r in payload["story_trends"]],
+        latest_week_start=payload["latest_week_start"],
+        week_sprint_ids=payload["week_sprint_ids"],
+        week_team_breakdown=[
+            TeamAggregateOut(**_coerce(r)) for r in payload["week_team_breakdown"]
+        ],
+        week_assignee_breakdown=[
+            AssigneeAggregateOut(**_coerce(r)) for r in payload["week_assignee_breakdown"]
+        ],
+        week_stories=payload["week_stories"],
+    )
+
+
+@router.get("/resource", response_model=ResourceResponseOut)
+def resource(
+    team_id: int | None = Query(None),
+    team_ids: list[int] = Query(default=[]),
+    sprint_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> ResourceResponseOut:
+    payload = resource_service.get_resource(
+        db,
+        team_ids=_resolve_team_ids(team_id, team_ids, db),
+        sprint_id=sprint_id,
+    )
+    return ResourceResponseOut(
+        story_trends=[StoryTrendOut(**_coerce(r)) for r in payload["story_trends"]],
+        latest_week_start=payload["latest_week_start"],
+        week_team_breakdown=[
+            TeamAggregateOut(**_coerce(r)) for r in payload["week_team_breakdown"]
+        ],
+        week_assignee_breakdown=[
+            AssigneeAggregateOut(**_coerce(r)) for r in payload["week_assignee_breakdown"]
+        ],
+        week_stories=payload["week_stories"],
+    )
+
+
+@router.get("/quality", response_model=QualityResponseOut)
+def quality(
+    team_id: int | None = Query(None),
+    team_ids: list[int] = Query(default=[]),
+    sprint_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> QualityResponseOut:
+    payload = quality_service.get_quality(
+        db,
+        team_ids=_resolve_team_ids(team_id, team_ids, db),
+        sprint_id=sprint_id,
+    )
+    breakdown = payload["week_team_breakdown"]
+    return QualityResponseOut(
+        issue_type_trends=[
+            IssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
+        ],
+        latest_week_start=payload["latest_week_start"],
+        week_team_breakdown={
+            "story": [TeamAggregateOut(**_coerce(r)) for r in breakdown["story"]],
+            "bug": [TeamAggregateOut(**_coerce(r)) for r in breakdown["bug"]],
+            "task": [TeamAggregateOut(**_coerce(r)) for r in breakdown["task"]],
+        },
+    )
 
 
 def _coerce(row: dict) -> dict:

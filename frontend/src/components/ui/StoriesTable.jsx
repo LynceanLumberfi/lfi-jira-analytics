@@ -30,7 +30,13 @@ function SortTH({ col, sortCol, sortDir, onSort, className, children }) {
 
 // ---------- filter bar ----------
 
-function FilterBar({ filterQ, onQ, filterSkill, onSkill, filterTeam, onTeam, teams, onClear, hasFilters }) {
+function FilterBar({
+  filterQ, onQ,
+  filterSkill, onSkill,
+  filterTeam, onTeam, teams,
+  filterAssignee, onAssignee, assignees,
+  onClear, hasFilters,
+}) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
       {/* search */}
@@ -68,6 +74,18 @@ function FilterBar({ filterQ, onQ, filterSkill, onSkill, filterTeam, onTeam, tea
         </select>
       )}
 
+      {/* assignee */}
+      {assignees.length > 0 && (
+        <select
+          value={filterAssignee}
+          onChange={(e) => onAssignee(e.target.value)}
+          className="h-8 rounded border border-border bg-bg-sunken px-2.5 text-[12.5px] text-ink focus:border-accent focus:outline-none"
+        >
+          <option value="">All Assignees</option>
+          {assignees.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+      )}
+
       {/* clear */}
       {hasFilters && (
         <button
@@ -89,6 +107,7 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
   const [filterQ, setFilterQ] = useState("");
   const [filterSkill, setFilterSkill] = useState("all");
   const [filterTeam, setFilterTeam] = useState("");
+  const [filterAssignee, setFilterAssignee] = useState("");
   const [selectedKey, setSelectedKey] = useState(null);
 
   const teams = useMemo(() => {
@@ -100,7 +119,16 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
       .sort();
   }, [items, showTeamFilter]);
 
-  const hasFilters = filterQ !== "" || filterSkill !== "all" || filterTeam !== "";
+  const assignees = useMemo(() => {
+    const seen = new Set();
+    return items
+      .map((it) => it.assignee_name)
+      .filter((n) => n && !seen.has(n) && seen.add(n))
+      .sort();
+  }, [items]);
+
+  const hasFilters =
+    filterQ !== "" || filterSkill !== "all" || filterTeam !== "" || filterAssignee !== "";
 
   function handleSort(col) {
     if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -111,6 +139,7 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
     setFilterQ("");
     setFilterSkill("all");
     setFilterTeam("");
+    setFilterAssignee("");
   }
 
   const rows = useMemo(() => {
@@ -125,6 +154,7 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
     if (filterSkill === "skill") list = list.filter((it) => it.skill_usage_detected);
     if (filterSkill === "no_skill") list = list.filter((it) => !it.skill_usage_detected);
     if (filterTeam) list = list.filter((it) => it.team_name === filterTeam);
+    if (filterAssignee) list = list.filter((it) => it.assignee_name === filterAssignee);
 
     return [...list].sort((a, b) => {
       let av, bv;
@@ -140,7 +170,7 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
       if (av > bv) return sortDir === "asc" ? 1 : -1;
       return 0;
     });
-  }, [items, filterQ, filterSkill, filterTeam, sortCol, sortDir]);
+  }, [items, filterQ, filterSkill, filterTeam, filterAssignee, sortCol, sortDir]);
 
   if (isLoading) {
     return (
@@ -157,6 +187,8 @@ export function StoriesTable({ items = [], isLoading = false, showTeamFilter = f
         filterSkill={filterSkill} onSkill={setFilterSkill}
         filterTeam={filterTeam} onTeam={setFilterTeam}
         teams={teams}
+        filterAssignee={filterAssignee} onAssignee={setFilterAssignee}
+        assignees={assignees}
         onClear={clearFilters}
         hasFilters={hasFilters}
       />

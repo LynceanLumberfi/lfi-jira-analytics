@@ -1,79 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import {
-  getAnalyticsIssueTypeTrends,
-  getAnalyticsStoryTrends,
-  getTeams,
-} from "../../lib/api";
+import { Loader2 } from "lucide-react";
+import { getAnalyticsOverview, getTeams } from "../../lib/api";
 import { isFeaturedTeam } from "../../lib/config";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Sparkline } from "../../components/charts/Sparkline";
 import { IssueTypeTrendsChart } from "../../components/charts/IssueTypeTrendsChart";
 import { StoryTrendsChart } from "../../components/charts/StoryTrendsChart";
-
-function DeltaArrow({ direction, tone, prevValue, prevSub }) {
-  const colorClass =
-    tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-ink-4";
-  const Icon = direction === "up" ? ArrowUp : ArrowDown;
-  return (
-    <div className="relative group">
-      <Icon size={15} className={colorClass} strokeWidth={2.5} />
-      {/* hover tooltip */}
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden
-                      -translate-x-1/2 whitespace-nowrap rounded-md border border-border
-                      bg-bg-elev px-3 py-2 shadow-md group-hover:block">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-ink-3 mb-1">
-          Prev week
-        </p>
-        <p className="text-[13px] font-semibold text-ink">{prevValue}</p>
-        {prevSub && (
-          <p className="mt-0.5 text-[11px] text-ink-4">{prevSub}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function KpiHero({ label, value, sub, spark, sparkTone = "accent", tone = "default", delta }) {
-  const subTone =
-    tone === "warn"
-      ? "text-warn"
-      : tone === "err"
-        ? "text-err"
-        : tone === "ok"
-          ? "text-ok"
-          : "text-ink-3";
-  return (
-    <Card>
-      <CardBody>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
-              {label}
-            </p>
-            <div className="mt-2 flex items-center gap-1.5">
-              <p className="text-[26px] font-semibold leading-tight text-ink">
-                {value}
-              </p>
-              {delta && (
-                <DeltaArrow
-                  direction={delta.direction}
-                  tone={delta.tone}
-                  prevValue={delta.prevValue}
-                  prevSub={delta.prevSub}
-                />
-              )}
-            </div>
-            {sub && <p className={`mt-1 text-[12.5px] ${subTone}`}>{sub}</p>}
-          </div>
-          {spark?.length > 0 && (
-            <Sparkline data={spark} tone={sparkTone} width={110} height={36} />
-          )}
-        </div>
-      </CardBody>
-    </Card>
-  );
-}
+import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
 
 function pct(v) {
   if (v == null) return "—";
@@ -98,19 +30,6 @@ function currentIsoWeekMonday() {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
-function computeDelta({ curr, prev, higherIsBetter = true, fmtPrev, prevSub }) {
-  if (curr == null || prev == null) return null;
-  const direction = curr > prev ? "up" : curr < prev ? "down" : null;
-  if (!direction) return null;
-  const isGood = higherIsBetter ? direction === "up" : direction === "down";
-  return {
-    direction,
-    tone: isGood ? "ok" : "warn",
-    prevValue: fmtPrev ?? String(prev),
-    prevSub: prevSub ?? "",
-  };
-}
-
 export function Overview() {
   const { data: teams } = useQuery({
     queryKey: ["teams"],
@@ -124,16 +43,15 @@ export function Overview() {
     : undefined;
   const teamIdsReady = featuredIds !== undefined;
 
-  const { data: issueTypes, isLoading: itLoading } = useQuery({
-    queryKey: ["analytics", "issue-type-trends", 12, featuredIds],
-    queryFn: () => getAnalyticsIssueTypeTrends({ last: 12, team_ids: featuredIds }),
+  const { data: overview, isLoading: oLoading } = useQuery({
+    queryKey: ["analytics", "overview", featuredIds],
+    queryFn: () => getAnalyticsOverview({ team_ids: featuredIds }),
     enabled: teamIdsReady,
   });
-  const { data: trends, isLoading: tLoading } = useQuery({
-    queryKey: ["analytics", "story-trends", 12, featuredIds],
-    queryFn: () => getAnalyticsStoryTrends({ last: 12, team_ids: featuredIds }),
-    enabled: teamIdsReady,
-  });
+  const trends = overview?.story_trends;
+  const issueTypes = overview?.issue_type_trends;
+  const tLoading = oLoading;
+  const itLoading = oLoading;
   // Last full week (week of last Sunday) and the one before
   const currentWeek = currentIsoWeekMonday();
   const activeWeeks = trends ? [...trends].reverse().filter((w) => w.week_start < currentWeek) : [];
@@ -199,6 +117,7 @@ export function Overview() {
             noData ? "no completed stories yet" :
             lastActiveWeek ? `${lastActiveWeek.story_count} stories · ${weekLabel(lastActiveWeek.week_start)}` : ""
           }
+          tone="accent"
           spark={spSpark}
           sparkTone="accent"
           delta={spDelta}
@@ -213,11 +132,7 @@ export function Overview() {
           }
           spark={skillSpark}
           sparkTone="ok"
-          tone={
-            lastActiveWeek?.skill_adoption_rate != null && lastActiveWeek.skill_adoption_rate >= 0.5
-              ? "ok"
-              : "default"
-          }
+          tone="ok"
           delta={skillDelta}
         />
         <KpiHero
@@ -228,6 +143,7 @@ export function Overview() {
               ? `${lastActiveWeek.active_resources} active dev${lastActiveWeek.active_resources !== 1 ? "s" : ""}`
               : noData ? "no data yet" : ""
           }
+          tone="info"
           spark={pprSpark}
           sparkTone="info"
           delta={pprDelta}
@@ -240,6 +156,7 @@ export function Overview() {
               ? `${lastActiveWeek.hour_logged_count} stories w/ time logged`
               : noData ? "no time tracking data" : ""
           }
+          tone="warn"
           spark={hppSpark}
           sparkTone="warn"
           delta={hppDelta}

@@ -101,6 +101,8 @@ export function DevSkillAdoptionChart({ data = [], height = 240 }) {
     <ReactECharts
       option={option}
       style={{ height: chartHeight, width: "100%" }}
+      opts={{ renderer: "svg" }}
+      notMerge
     />
   );
 }
