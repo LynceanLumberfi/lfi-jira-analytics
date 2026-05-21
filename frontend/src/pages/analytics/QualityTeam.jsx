@@ -88,9 +88,9 @@ export function QualityTeam() {
     enabled: isKnown,
   });
   const trends = payload?.issue_type_trends ?? [];
-  const storyTeamRows = payload?.cadence_team_breakdown?.story;
-  const bugTeamRows = payload?.cadence_team_breakdown?.bug;
-  const taskTeamRows = payload?.cadence_team_breakdown?.task;
+  const storyDevRows = payload?.cadence_assignee_breakdown?.story;
+  const bugDevRows = payload?.cadence_assignee_breakdown?.bug;
+  const taskDevRows = payload?.cadence_assignee_breakdown?.task;
   const hasCadence = payload?.cadence_end != null;
 
   function onSprintChange(e) {
@@ -109,25 +109,32 @@ export function QualityTeam() {
   const currentRow = currentIdx >= 0 ? trends[currentIdx] : null;
   const prevRow = currentIdx > 0 ? trends[currentIdx - 1] : null;
 
-  const teamData = useMemo(() => {
-    if (!storyTeamRows || !bugTeamRows || !taskTeamRows) return null;
+  const devData = useMemo(() => {
+    if (!storyDevRows || !bugDevRows || !taskDevRows) return null;
     const map = {};
     const merge = (rows, type) => {
       for (const r of rows) {
-        if (!map[r.team_id]) {
-          map[r.team_id] = { team_id: r.team_id, team_name: r.team_name, stories: 0, bugs: 0, tasks: 0 };
+        const key = r.assignee_id ?? `name:${r.assignee_name}`;
+        if (!map[key]) {
+          map[key] = {
+            assignee_id: r.assignee_id,
+            assignee_name: r.assignee_name,
+            stories: 0,
+            bugs: 0,
+            tasks: 0,
+          };
         }
-        map[r.team_id][type] = r.issue_count;
+        map[key][type] = r.issue_count;
       }
     };
-    merge(storyTeamRows, "stories");
-    merge(bugTeamRows, "bugs");
-    merge(taskTeamRows, "tasks");
+    merge(storyDevRows, "stories");
+    merge(bugDevRows, "bugs");
+    merge(taskDevRows, "tasks");
     return Object.values(map)
       .map((r) => ({ ...r, total: r.stories + r.bugs + r.tasks }))
       .filter((r) => r.total > 0)
       .sort((a, b) => b.stories - a.stories);
-  }, [storyTeamRows, bugTeamRows, taskTeamRows]);
+  }, [storyDevRows, bugDevRows, taskDevRows]);
 
   const storyMix     = safeRate(currentRow?.stories, currentRow?.total);
   const prevStoryMix = safeRate(prevRow?.stories, prevRow?.total);
@@ -249,16 +256,19 @@ export function QualityTeam() {
             </CardBody>
           </Card>
 
-          {teamData && teamData.length > 0 && (
+          {devData && devData.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Team breakdown — {currentLabel}</CardTitle>
+                <CardTitle>Resource breakdown — {currentLabel}</CardTitle>
+                <span className="text-[12.5px] text-ink-3">
+                  {devData.length} developer{devData.length === 1 ? "" : "s"}
+                </span>
               </CardHeader>
               <CardBody pad="none">
                 <table className="w-full border-collapse text-sm">
                   <thead className="bg-bg-sunken text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-3">
                     <tr>
-                      <th className="px-4 py-2 text-left">Team</th>
+                      <th className="px-4 py-2 text-left">Developer</th>
                       <th className="px-4 py-2 text-right">Stories</th>
                       <th className="px-4 py-2 text-right">Bugs</th>
                       <th className="px-4 py-2 text-right">Tasks</th>
@@ -267,12 +277,15 @@ export function QualityTeam() {
                     </tr>
                   </thead>
                   <tbody>
-                    {teamData.map((r) => {
+                    {devData.map((r) => {
                       const mix = safeRate(r.stories, r.total);
                       return (
-                        <tr key={r.team_id} className="border-t border-border hover:bg-bg-sunken/50">
+                        <tr
+                          key={`q-${r.assignee_id ?? r.assignee_name}`}
+                          className="border-t border-border hover:bg-bg-sunken/50"
+                        >
                           <td className="px-4 py-3 text-[13px] font-medium text-ink">
-                            {r.team_name ?? "—"}
+                            {r.assignee_name ?? "—"}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-[12px] text-ink-2">
                             {r.stories}

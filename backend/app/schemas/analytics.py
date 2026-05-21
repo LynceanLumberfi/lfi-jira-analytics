@@ -182,9 +182,16 @@ class QualityCadenceTeamBreakdown(BaseModel):
     task: list[TeamAggregateOut]
 
 
+class QualityCadenceAssigneeBreakdown(BaseModel):
+    story: list[AssigneeAggregateOut]
+    bug: list[AssigneeAggregateOut]
+    task: list[AssigneeAggregateOut]
+
+
 class QualityResponseOut(BaseModel):
     issue_type_trends: list[CadenceIssueTypeTrendOut]
     cadence_start: date | None
     cadence_end: date | None
     cadence_sprint_ids: list[int]
     cadence_team_breakdown: QualityCadenceTeamBreakdown
+    cadence_assignee_breakdown: QualityCadenceAssigneeBreakdown

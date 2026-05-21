@@ -281,7 +281,8 @@ def quality(
         team_ids=_resolve_team_ids(team_id, team_ids, db),
         sprint_id=sprint_id,
     )
-    breakdown = payload["cadence_team_breakdown"]
+    team_b = payload["cadence_team_breakdown"]
+    assignee_b = payload["cadence_assignee_breakdown"]
     return QualityResponseOut(
         issue_type_trends=[
             CadenceIssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
@@ -290,9 +291,14 @@ def quality(
         cadence_end=payload["cadence_end"],
         cadence_sprint_ids=payload["cadence_sprint_ids"],
         cadence_team_breakdown={
-            "story": [TeamAggregateOut(**_coerce(r)) for r in breakdown["story"]],
-            "bug": [TeamAggregateOut(**_coerce(r)) for r in breakdown["bug"]],
-            "task": [TeamAggregateOut(**_coerce(r)) for r in breakdown["task"]],
+            "story": [TeamAggregateOut(**_coerce(r)) for r in team_b["story"]],
+            "bug": [TeamAggregateOut(**_coerce(r)) for r in team_b["bug"]],
+            "task": [TeamAggregateOut(**_coerce(r)) for r in team_b["task"]],
+        },
+        cadence_assignee_breakdown={
+            "story": [AssigneeAggregateOut(**_coerce(r)) for r in assignee_b["story"]],
+            "bug": [AssigneeAggregateOut(**_coerce(r)) for r in assignee_b["bug"]],
+            "task": [AssigneeAggregateOut(**_coerce(r)) for r in assignee_b["task"]],
         },
     )
 

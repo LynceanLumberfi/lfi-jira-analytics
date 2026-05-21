@@ -66,6 +66,7 @@ def get_quality(
             "cadence_end": None,
             "cadence_sprint_ids": [],
             "cadence_team_breakdown": {"story": [], "bug": [], "task": []},
+            "cadence_assignee_breakdown": {"story": [], "bug": [], "task": []},
         }
 
     common = {
@@ -84,10 +85,22 @@ def get_quality(
             db, AnalyticsFilters(issue_type="Task", **common), team_ids=team_ids
         ),
     }
+    by_assignee_type = {
+        "story": analytics_service.by_assignee(
+            db, AnalyticsFilters(issue_type="Story", **common), team_ids=team_ids
+        ),
+        "bug": analytics_service.by_assignee(
+            db, AnalyticsFilters(issue_type="Bug", **common), team_ids=team_ids
+        ),
+        "task": analytics_service.by_assignee(
+            db, AnalyticsFilters(issue_type="Task", **common), team_ids=team_ids
+        ),
+    }
     return {
         "issue_type_trends": issue_type_trends,
         "cadence_start": cadence["start_date"],
         "cadence_end": cadence["end_date"],
         "cadence_sprint_ids": list(cadence["sprint_ids"]),
         "cadence_team_breakdown": by_type,
+        "cadence_assignee_breakdown": by_assignee_type,
     }
