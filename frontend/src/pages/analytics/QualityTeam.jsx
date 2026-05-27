@@ -7,6 +7,7 @@ import { isFeaturedTeam } from "../../lib/config";
 import { cadenceLabel } from "../../lib/cadence";
 import { Card, CardBody, CardHeader, CardTitle } from "../../components/ui/Card";
 import { QualityTrendsChart } from "../../components/charts/QualityTrendsChart";
+import { BugsWeeklyTrendChart } from "../../components/charts/BugsWeeklyTrendChart";
 import { KpiHero, DeltaArrow, computeDelta } from "../../components/ui/KpiHero";
 
 function pct(v) {
@@ -253,6 +254,18 @@ export function QualityTeam() {
             </CardHeader>
             <CardBody pad="lg">
               <QualityTrendsChart data={trends} />
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Bugs created — last 12 weeks</CardTitle>
+              <span className="text-[12.5px] text-ink-3">
+                Customer vs Internal, by creation date
+              </span>
+            </CardHeader>
+            <CardBody pad="lg">
+              <BugsWeeklyTrendChart data={payload?.bug_weekly_trends ?? []} />
             </CardBody>
           </Card>
 

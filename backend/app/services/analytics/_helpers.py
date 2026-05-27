@@ -135,6 +135,25 @@ def sprint_ids_ending_in_week(db: Session, week_start: date) -> list[int]:
 
 TEAM_SPRINT_PREFIXES: tuple[str, ...] = ("FS", "BFX", "HR")
 
+# Featured-team name → sprint-name prefix. Source of truth for the team→sprint
+# relationship on drill-down pages (see previous_sprint_id_by_prefix). Kept as a
+# constant rather than a teams.sprint_prefix column to avoid re-squashing the
+# initial migration for a 3-row mapping.
+TEAM_NAME_TO_SPRINT_PREFIX: dict[str, str] = {
+    "Field Productivity": "FS",
+    "Builderfax": "BFX",
+    "HR & People Ops": "HR",
+}
+
+
+def _team_sprint_prefix(db: Session, team_id: int) -> str | None:
+    name = db.execute(
+        text("SELECT name FROM teams WHERE id = :id"), {"id": team_id}
+    ).scalar()
+    if name is None:
+        return None
+    return TEAM_NAME_TO_SPRINT_PREFIX.get(name)
+
 
 def _cadence_row_to_dict(row: Any) -> dict[str, Any]:
     return {
@@ -235,6 +254,9 @@ def recent_cadences(db: Session, limit: int = 12) -> list[dict[str, Any]]:
 def latest_closed_sprint_cadence_for_team(
     db: Session, team_id: int
 ) -> dict[str, Any] | None:
+    prefix = _team_sprint_prefix(db, team_id)
+    if prefix is None:
+        return None
     sql = text(
         """
         SELECT s.id,
@@ -243,17 +265,12 @@ def latest_closed_sprint_cadence_for_team(
         FROM sprints s
         WHERE s.state = 'closed'
           AND s.end_date IS NOT NULL
-          AND EXISTS (
-              SELECT 1
-              FROM issue_sprints iss
-              JOIN issues i ON i.id = iss.issue_id
-              WHERE iss.sprint_id = s.id AND i.team_id = :team_id
-          )
+          AND split_part(s.name, '-', 1) = :prefix
         ORDER BY s.end_date DESC
         LIMIT 1
         """
     )
-    row = db.execute(sql, {"team_id": team_id}).first()
+    row = db.execute(sql, {"prefix": prefix}).first()
     if row is None:
         return None
     return {
@@ -266,6 +283,9 @@ def latest_closed_sprint_cadence_for_team(
 def recent_sprint_cadences_for_team(
     db: Session, team_id: int, limit: int = 12
 ) -> list[dict[str, Any]]:
+    prefix = _team_sprint_prefix(db, team_id)
+    if prefix is None:
+        return []
     sql = text(
         """
         SELECT s.id,
@@ -274,17 +294,12 @@ def recent_sprint_cadences_for_team(
         FROM sprints s
         WHERE s.state = 'closed'
           AND s.end_date IS NOT NULL
-          AND EXISTS (
-              SELECT 1
-              FROM issue_sprints iss
-              JOIN issues i ON i.id = iss.issue_id
-              WHERE iss.sprint_id = s.id AND i.team_id = :team_id
-          )
+          AND split_part(s.name, '-', 1) = :prefix
         ORDER BY s.end_date DESC
         LIMIT :limit
         """
     )
-    rows = db.execute(sql, {"team_id": team_id, "limit": limit}).all()
+    rows = db.execute(sql, {"prefix": prefix, "limit": limit}).all()
     return [
         {
             "start_date": r.start_date,

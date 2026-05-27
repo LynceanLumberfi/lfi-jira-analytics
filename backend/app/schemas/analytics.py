@@ -146,6 +146,13 @@ class CadenceIssueTypeTrendOut(BaseModel):
     total: int
 
 
+class BugWeeklyTrendOut(BaseModel):
+    week_start: date
+    customer_bugs: int
+    internal_bugs: int
+    total: int
+
+
 # ---- Per-tab composite responses ----
 
 
@@ -190,6 +197,7 @@ class QualityCadenceAssigneeBreakdown(BaseModel):
 
 class QualityResponseOut(BaseModel):
     issue_type_trends: list[CadenceIssueTypeTrendOut]
+    bug_weekly_trends: list[BugWeeklyTrendOut]
     cadence_start: date | None
     cadence_end: date | None
     cadence_sprint_ids: list[int]

@@ -216,7 +216,11 @@ def _build_jql(since: datetime | None, project_key: str | None) -> str:
     if since is not None:
         ts = since.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
         clauses.append(f'updated >= "{ts}"')
-    where = " AND ".join(clauses) if clauses else ""
+    clauses.append(
+        "(issuetype in (Bug, Epic) "
+        "OR (issuetype in (Story, Task) AND sprint is not EMPTY))"
+    )
+    where = " AND ".join(clauses)
     return f"{where} ORDER BY updated ASC".strip()
 
 

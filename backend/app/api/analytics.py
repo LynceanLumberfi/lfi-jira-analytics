@@ -10,6 +10,7 @@ from app.db import get_db
 from app.schemas.analytics import (
     AiAdoptionResponseOut,
     AssigneeAggregateOut,
+    BugWeeklyTrendOut,
     CadenceIssueTypeTrendOut,
     CadenceTrendOut,
     CostSummaryOut,
@@ -286,6 +287,9 @@ def quality(
     return QualityResponseOut(
         issue_type_trends=[
             CadenceIssueTypeTrendOut(**_coerce(r)) for r in payload["issue_type_trends"]
+        ],
+        bug_weekly_trends=[
+            BugWeeklyTrendOut(**_coerce(r)) for r in payload["bug_weekly_trends"]
         ],
         cadence_start=payload["cadence_start"],
         cadence_end=payload["cadence_end"],

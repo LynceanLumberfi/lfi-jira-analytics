@@ -572,6 +572,62 @@ def issue_type_trends_by_cadence(
     return results
 
 
+# ---------- bug weekly trends by created_at (Quality tab) ----------
+
+
+def bug_weekly_trends_by_created(
+    db: Session,
+    *,
+    team_ids: list[int] | None,
+    weeks: int = 12,
+) -> list[dict[str, Any]]:
+    """Last `weeks` ISO-Monday week buckets of bugs by created_at.
+
+    Counts Customer Bugs (`reported_by_customer IS TRUE`) and Internal Bugs
+    (`COALESCE(reported_by_customer, FALSE) IS FALSE`) per week. Restricted to
+    bugs with `team_id IS NOT NULL`; applies the org-wide `[QA]` summary
+    exclusion for parity with other Quality-tab queries.
+    """
+    params: dict[str, Any] = {"weeks": int(weeks)}
+    extra_clauses: list[str] = []
+    _apply_team_filter(extra_clauses, params, None, team_ids)
+    extra = "\n              ".join(extra_clauses)
+
+    sql = text(
+        f"""
+        WITH weeks AS (
+            SELECT generate_series(
+                date_trunc('week', NOW())::date - ((:weeks - 1) || ' weeks')::interval,
+                date_trunc('week', NOW())::date,
+                INTERVAL '1 week'
+            )::date AS week_start
+        ),
+        bugs_agg AS (
+            SELECT
+                date_trunc('week', f.created_at)::date AS week_start,
+                COUNT(*) FILTER (WHERE f.reported_by_customer IS TRUE)                   AS customer_bugs,
+                COUNT(*) FILTER (WHERE COALESCE(f.reported_by_customer, FALSE) IS FALSE) AS internal_bugs,
+                COUNT(*)                                                                 AS total
+            FROM v_issue_facts f
+            WHERE lower(f.issue_type) = 'bug'
+              AND f.team_id IS NOT NULL
+              AND (f.summary IS NULL OR ltrim(f.summary) NOT ILIKE '[QA]%')
+              {extra}
+            GROUP BY 1
+        )
+        SELECT
+            w.week_start,
+            COALESCE(b.customer_bugs, 0) AS customer_bugs,
+            COALESCE(b.internal_bugs, 0) AS internal_bugs,
+            COALESCE(b.total, 0)         AS total
+        FROM weeks w
+        LEFT JOIN bugs_agg b ON b.week_start = w.week_start
+        ORDER BY w.week_start ASC
+        """
+    )
+    return [dict(r._mapping) for r in db.execute(sql, params).all()]
+
+
 # ---------- issue-type trends (weekly completed counts by type) ----------
 
 

@@ -58,10 +58,14 @@ def get_quality(
     issue_type_trends = analytics_service.issue_type_trends_by_cadence(
         db, cadences=trends_cadences, team_ids=team_ids
     )
+    bug_weekly_trends = analytics_service.bug_weekly_trends_by_created(
+        db, team_ids=team_ids, weeks=12
+    )
 
     if cadence is None:
         return {
             "issue_type_trends": issue_type_trends,
+            "bug_weekly_trends": bug_weekly_trends,
             "cadence_start": None,
             "cadence_end": None,
             "cadence_sprint_ids": [],
@@ -98,6 +102,7 @@ def get_quality(
     }
     return {
         "issue_type_trends": issue_type_trends,
+        "bug_weekly_trends": bug_weekly_trends,
         "cadence_start": cadence["start_date"],
         "cadence_end": cadence["end_date"],
         "cadence_sprint_ids": list(cadence["sprint_ids"]),
