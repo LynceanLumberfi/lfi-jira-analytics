@@ -61,6 +61,23 @@ def _from_db_row(cfg: dict) -> JiraSettings:
     )
 
 
+@dataclass(frozen=True)
+class S3Settings:
+    access_key_id: str
+    secret_access_key: str
+    region: str
+    bucket: str | None
+
+
+def get_s3_settings() -> S3Settings:
+    return S3Settings(
+        access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        region=os.environ.get("AWS_REGION", "us-east-1"),
+        bucket=os.environ.get("S3_BUCKET") or None,
+    )
+
+
 def get_jira_settings(db=None) -> JiraSettings:
     """Return Jira settings: active DB integration first, env vars as fallback.
 

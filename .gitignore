@@ -223,3 +223,6 @@ __marimo__/
 # Claude Code — local settings and lock files (agents/ is tracked intentionally)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Downloaded S3 data (backend/cli/s3_download.py)
+data/

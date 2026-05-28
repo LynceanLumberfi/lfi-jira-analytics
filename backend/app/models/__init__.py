@@ -13,6 +13,8 @@ from app.models.staging_issue import StagingIssue
 from app.models.sync_phase import SyncPhase
 from app.models.sync_state import SyncState
 from app.models.team import Team
+from app.models.test_case_result import TestCaseResult
+from app.models.test_run import TestRun
 from app.models.user import User
 from app.models.worklog import Worklog
 
@@ -32,6 +34,8 @@ __all__ = [
     "SyncPhase",
     "SyncState",
     "Team",
+    "TestCaseResult",
+    "TestRun",
     "User",
     "Worklog",
 ]

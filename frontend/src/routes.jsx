@@ -25,7 +25,7 @@ import { QualityTeam } from "./pages/analytics/QualityTeam";
 import { WorkspaceLayout } from "./pages/workspace/WorkspaceLayout";
 import { TestAutomationLayout } from "./pages/workspace/TestAutomationLayout";
 import { CoverageOverview } from "./pages/workspace/CoverageOverview";
-import { ExecutionPlaceholder } from "./pages/workspace/ExecutionPlaceholder";
+import { Execution } from "./pages/workspace/Execution";
 import { TestCoverageUpload } from "./pages/admin/TestCoverageUpload";
 import { TicketsGrid } from "./pages/admin/TicketsGrid";
 
@@ -94,7 +94,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <Navigate to="coverage" replace /> },
               { path: "coverage", element: <CoverageOverview /> },
-              { path: "execution", element: <ExecutionPlaceholder /> },
+              { path: "execution", element: <Execution /> },
             ],
           },
         ],
