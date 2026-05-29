@@ -74,6 +74,8 @@ class TestOfInterest(BaseModel):
     test_name: str
     class_or_file: str | None
     package_or_suite: str | None
+    module: str | None
+    vendor: str | None
     last_status: str
     last_seen: date
     last_passed: date | None
@@ -94,6 +96,20 @@ class StaleTest(BaseModel):
     test_name: str
     class_or_file: str | None
     package_or_suite: str | None
+    module: str | None
+    vendor: str | None
     last_seen: date
     last_status_seen: str
     days_absent: int
+
+
+class ModuleCount(BaseModel):
+    module: str
+    kind: str | None  # 'playwright' | 'surefire' | None (all)
+    tests: int
+    runs_touched: int
+
+
+class ModulesOut(BaseModel):
+    modules: list[ModuleCount]
+    vendors: list[ModuleCount]

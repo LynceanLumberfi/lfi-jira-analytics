@@ -36,7 +36,11 @@ def list_objects(settings: S3Settings, bucket: str, prefix: str = "") -> list[di
             key = obj["Key"]
             if key.endswith("/"):
                 continue
-            objects.append({"key": key, "size": obj["Size"]})
+            objects.append({
+                "key": key,
+                "size": obj["Size"],
+                "last_modified": obj["LastModified"],
+            })
     return objects
 
 
@@ -63,4 +67,29 @@ def download_prefix(
         written.append(local_path)
         if progress is not None:
             progress(key, obj["size"])
+    return written
+
+
+def download_keys(
+    settings: S3Settings,
+    bucket: str,
+    keys: list[str],
+    dest_dir: Path,
+    progress: Callable[[str, int], None] | None = None,
+) -> list[Path]:
+    """Download a specific list of keys into dest_dir, preserving key paths.
+
+    Unlike download_prefix, this skips the list step — the caller already
+    decided which keys to fetch (typically after diffing against DB state).
+    """
+    client = _client(settings)
+    written: list[Path] = []
+    for key in keys:
+        local_path = dest_dir / key
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        client.download_file(bucket, key, str(local_path))
+        written.append(local_path)
+        if progress is not None:
+            size = local_path.stat().st_size
+            progress(key, size)
     return written

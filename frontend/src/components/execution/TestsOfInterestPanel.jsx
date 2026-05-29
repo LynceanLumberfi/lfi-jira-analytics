@@ -95,7 +95,7 @@ const COMMON_TEST_COL = {
   label: "Test",
   render: (r) => (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span
           className={cn(
             "rounded px-1.5 py-0.5 text-[10px] font-bold uppercase",
@@ -104,6 +104,15 @@ const COMMON_TEST_COL = {
         >
           {r.kind === "playwright" ? "PW" : "JUnit"}
         </span>
+        {r.module && (
+          <span
+            className="rounded-full bg-bg-sunken px-2 py-0.5 text-[10px] font-semibold text-ink-2"
+            title={r.vendor ? `${r.module} · ${r.vendor}` : r.module}
+          >
+            {r.module}
+            {r.vendor ? ` · ${r.vendor}` : ""}
+          </span>
+        )}
         <span className="font-medium text-ink">{r.test_name}</span>
       </div>
       <span className="mt-0.5 truncate text-[11px] text-ink-3" title={r.class_or_file || ""}>
@@ -262,35 +271,37 @@ const STALE_COLUMNS = [
   },
 ];
 
-function useTabQuery(activeTab, { days, kind }) {
+function useTabQuery(activeTab, { days, kind, module, vendor }) {
   const failing = useQuery({
-    queryKey: ["test-execution", "failing", days, kind],
-    queryFn: () => getExecutionFailing({ days, kind, limit: 200 }),
+    queryKey: ["test-execution", "failing", days, kind, module, vendor],
+    queryFn: () => getExecutionFailing({ days, kind, module, vendor, limit: 200 }),
     enabled: activeTab === "failing",
     staleTime: 60_000,
   });
   const flaky = useQuery({
-    queryKey: ["test-execution", "flaky", days, kind],
-    queryFn: () => getExecutionFlaky({ days, kind, limit: 200 }),
+    queryKey: ["test-execution", "flaky", days, kind, module, vendor],
+    queryFn: () => getExecutionFlaky({ days, kind, module, vendor, limit: 200 }),
     enabled: activeTab === "flaky",
     staleTime: 60_000,
   });
   const streak = useQuery({
-    queryKey: ["test-execution", "streak", kind],
-    queryFn: () => getExecutionFailingStreak({ days: 30, streak_days: 7, kind, limit: 200 }),
+    queryKey: ["test-execution", "streak", kind, module, vendor],
+    queryFn: () =>
+      getExecutionFailingStreak({ days: 30, streak_days: 7, kind, module, vendor, limit: 200 }),
     enabled: activeTab === "streak",
     staleTime: 60_000,
   });
   const stale = useQuery({
-    queryKey: ["test-execution", "stale", days, kind],
-    queryFn: () => getExecutionStale({ days, history_days: 30, kind, limit: 200 }),
+    queryKey: ["test-execution", "stale", days, kind, module, vendor],
+    queryFn: () =>
+      getExecutionStale({ days, history_days: 30, kind, module, vendor, limit: 200 }),
     enabled: activeTab === "stale",
     staleTime: 60_000,
   });
   return { failing, flaky, streak, stale };
 }
 
-export function TestsOfInterestPanel({ days, kind, summary }) {
+export function TestsOfInterestPanel({ days, kind, module, vendor, summary }) {
   const [activeTab, setActiveTab] = useState("failing");
   const counts = {
     failing: summary?.failing_tests,
@@ -298,7 +309,7 @@ export function TestsOfInterestPanel({ days, kind, summary }) {
     streak: summary?.failing_streak,
     stale: summary?.stale_tests,
   };
-  const queries = useTabQuery(activeTab, { days, kind });
+  const queries = useTabQuery(activeTab, { days, kind, module, vendor });
   const active = queries[activeTab];
 
   let columns;

@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.models.test_case_result import TestCaseResult
 from app.models.test_run import TestRun
+from app.services.test_module_classifier import classify as classify_module
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,12 @@ def _playwright_case(test: dict, result: dict, info: FilenameInfo) -> dict:
     status = result.get("status") or TestCaseResult.STATUS_PASSED
     outcome = test.get("outcome")
 
+    module, vendor = classify_module(
+        kind=info.kind,
+        test_file=location.get("file"),
+        suite=info.suite,
+    )
+
     return {
         "kind": info.kind,
         "test_name": test.get("title") or "",
@@ -201,6 +208,8 @@ def _playwright_case(test: dict, result: dict, info: FilenameInfo) -> dict:
         "error_snippet": error_snippet,
         "step_count": len(result.get("steps") or []) or None,
         "attachment_names": attachment_names,
+        "module": module,
+        "vendor": vendor,
     }
 
 
@@ -364,6 +373,11 @@ def _surefire_class_cases(
                         error_stack = stack_div.get_text("\n", strip=True)
             i += advanced
 
+        module, vendor = classify_module(
+            kind=info.kind,
+            class_fqn=class_fqn,
+            package_name=package_name,
+        )
         cases.append(
             {
                 "kind": info.kind,
@@ -386,6 +400,8 @@ def _surefire_class_cases(
                 "error_snippet": None,
                 "step_count": None,
                 "attachment_names": None,
+                "module": module,
+                "vendor": vendor,
             }
         )
 

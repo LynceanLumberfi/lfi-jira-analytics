@@ -25,10 +25,12 @@ class SyncState(Base):
     TRIGGERED_BY_PROMOTE = "api-promote"
     TRIGGERED_BY_SANITIZE = "api-sanitize"
     TRIGGERED_BY_SCORE = "api-score"
+    TRIGGERED_BY_S3_PULL = "api-s3-pull"
     NON_SYNC_TRIGGERED_BY: tuple[str, ...] = (
         TRIGGERED_BY_PROMOTE,
         TRIGGERED_BY_SANITIZE,
         TRIGGERED_BY_SCORE,
+        TRIGGERED_BY_S3_PULL,
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

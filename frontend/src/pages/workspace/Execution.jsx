@@ -1,10 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getExecutionSummary,
   getExecutionHeatmap,
   getExecutionTrends,
+  getSyncState,
+  triggerS3Pull,
 } from "../../lib/api";
 import { Card, CardBody, CardHeader, CardTitle, CardSubtitle } from "../../components/ui/Card";
 import { KpiHero, computeDelta } from "../../components/ui/KpiHero";
@@ -21,7 +23,9 @@ function readFilters(searchParams) {
   const kind = VALID_KINDS.includes(kindRaw) ? kindRaw : "all";
   const daysRaw = Number(searchParams.get("days") || 10);
   const days = VALID_DAYS.includes(daysRaw) ? daysRaw : 10;
-  return { kind, days };
+  const module = searchParams.get("module") || null;
+  const vendor = searchParams.get("vendor") || null;
+  return { kind, days, module, vendor };
 }
 
 function fmtPct(v) {
@@ -29,10 +33,63 @@ function fmtPct(v) {
   return v.toFixed(1) + "%";
 }
 
+function parseS3PullSummary(errorMessage) {
+  if (!errorMessage) return null;
+  try {
+    const obj = JSON.parse(errorMessage);
+    if (typeof obj === "object" && obj && "files_downloaded" in obj) return obj;
+  } catch {}
+  return null;
+}
+
+function useS3Pull() {
+  const queryClient = useQueryClient();
+  const [pullId, setPullId] = useState(null);
+
+  const mutation = useMutation({
+    mutationFn: () => triggerS3Pull(),
+    onSuccess: (state) => setPullId(state.id),
+  });
+
+  const stateQ = useQuery({
+    queryKey: ["s3-pull-state", pullId],
+    queryFn: () => getSyncState(pullId),
+    enabled: pullId != null,
+    refetchInterval: (q) => (q.state.data?.status === "running" ? 2000 : false),
+  });
+
+  const status = stateQ.data?.status ?? (mutation.isPending ? "running" : null);
+  const isRunning = mutation.isPending || status === "running";
+
+  useEffect(() => {
+    if (status === "success") {
+      queryClient.invalidateQueries({ queryKey: ["test-execution"] });
+    }
+  }, [status, queryClient]);
+
+  return {
+    trigger: () => mutation.mutate(),
+    isRunning,
+    status,
+    summary: status === "success" ? parseS3PullSummary(stateQ.data?.error_message) : null,
+    errorMessage:
+      status === "error"
+        ? stateQ.data?.error_message || "S3 pull failed"
+        : mutation.isError
+          ? mutation.error?.message || "S3 pull failed to start"
+          : null,
+    reset: () => {
+      setPullId(null);
+      mutation.reset();
+    },
+  };
+}
+
 export function Execution() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo(() => readFilters(searchParams), [searchParams]);
-  const { kind, days } = filters;
+  const { kind, days, module, vendor } = filters;
+  const s3Pull = useS3Pull();
 
   const onChangeFilter = (patch) => {
     const next = new URLSearchParams(searchParams);
@@ -44,18 +101,18 @@ export function Execution() {
   };
 
   const summaryQ = useQuery({
-    queryKey: ["test-execution", "summary", days, kind],
-    queryFn: () => getExecutionSummary({ days, kind }),
+    queryKey: ["test-execution", "summary", days, kind, module, vendor],
+    queryFn: () => getExecutionSummary({ days, kind, module, vendor }),
     staleTime: 60_000,
   });
   const heatmapQ = useQuery({
-    queryKey: ["test-execution", "heatmap", days, kind],
-    queryFn: () => getExecutionHeatmap({ days, kind }),
+    queryKey: ["test-execution", "heatmap", days, kind, module, vendor],
+    queryFn: () => getExecutionHeatmap({ days, kind, module, vendor }),
     staleTime: 60_000,
   });
   const trendsQ = useQuery({
-    queryKey: ["test-execution", "trends", kind],
-    queryFn: () => getExecutionTrends({ days: 30, kind }),
+    queryKey: ["test-execution", "trends", kind, module, vendor],
+    queryFn: () => getExecutionTrends({ days: 30, kind, module, vendor }),
     staleTime: 60_000,
   });
 
@@ -79,7 +136,38 @@ export function Execution() {
 
   return (
     <div className="flex flex-col gap-5">
-      <ExecutionFilterBar kind={kind} days={days} onChange={onChangeFilter} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[12px] text-ink-3">
+          Test reports are pulled from S3 on demand. Already-ingested files are skipped.
+        </div>
+        <div className="flex items-center gap-3">
+          {s3Pull.status === "success" && s3Pull.summary ? (
+            <span className="text-[12px] text-ink-3">
+              {s3Pull.summary.files_downloaded > 0
+                ? `Downloaded ${s3Pull.summary.files_downloaded} new file${s3Pull.summary.files_downloaded === 1 ? "" : "s"}, inserted ${s3Pull.summary.runs_inserted} run${s3Pull.summary.runs_inserted === 1 ? "" : "s"}.`
+                : "No new files — already up to date."}
+            </span>
+          ) : null}
+          {s3Pull.errorMessage ? (
+            <span className="text-[12px] text-err">{s3Pull.errorMessage}</span>
+          ) : null}
+          <button
+            type="button"
+            onClick={s3Pull.trigger}
+            disabled={s3Pull.isRunning}
+            className="rounded-md border border-accent bg-accent/10 px-3 py-1.5 text-[12.5px] font-semibold text-accent transition-colors hover:bg-accent/20 disabled:cursor-wait disabled:opacity-60"
+          >
+            {s3Pull.isRunning ? "Pulling from S3…" : "Pull from S3"}
+          </button>
+        </div>
+      </div>
+      <ExecutionFilterBar
+        kind={kind}
+        days={days}
+        module={module}
+        vendor={vendor}
+        onChange={onChangeFilter}
+      />
 
       {summaryQ.error ? (
         <Card>
@@ -183,7 +271,13 @@ export function Execution() {
           </div>
         </CardHeader>
         <CardBody>
-          <TestsOfInterestPanel days={days} kind={kind} summary={summary} />
+          <TestsOfInterestPanel
+            days={days}
+            kind={kind}
+            module={module}
+            vendor={vendor}
+            summary={summary}
+          />
         </CardBody>
       </Card>
     </div>

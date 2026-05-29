@@ -29,6 +29,8 @@ from app.schemas.test_execution import (
     HeatmapOut,
     HeatmapRow,
     KindFilter,
+    ModuleCount,
+    ModulesOut,
     StaleTest,
     TestOfInterest,
     TrendPoint,
@@ -99,6 +101,8 @@ cases AS (
         tcr.class_fqn,
         tcr.package_name,
         tcr.suite_path,
+        tcr.module,
+        tcr.vendor,
         tcr.status,
         tcr.started_at,
         tcr.error_message,
@@ -106,6 +110,8 @@ cases AS (
         wr.suite AS run_suite
     FROM test_case_result tcr
     JOIN window_runs wr ON wr.id = tcr.run_id
+    WHERE (:module IS NULL OR tcr.module = :module)
+      AND (:vendor IS NULL OR tcr.vendor = :vendor)
 ),
 labelled AS (
     SELECT
@@ -117,6 +123,8 @@ labelled AS (
         test_name,
         COALESCE(class_fqn, test_file) AS class_or_file,
         COALESCE(package_name, run_suite, suite_path) AS package_or_suite,
+        module,
+        vendor,
         status,
         started_at,
         error_message,
@@ -125,7 +133,7 @@ labelled AS (
 ),
 per_day AS (
     SELECT DISTINCT ON (uid, run_date)
-        uid, kind, test_name, class_or_file, package_or_suite,
+        uid, kind, test_name, class_or_file, package_or_suite, module, vendor,
         run_date, status, error_message
     FROM labelled
     ORDER BY uid, run_date, started_at DESC NULLS LAST, status DESC
@@ -147,6 +155,8 @@ def _validate_kind(kind: str) -> str:
 def get_summary(
     days: int = Query(10, ge=1, le=120),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     history_days: int = Query(30, ge=1, le=365),
     streak_days: int = Query(7, ge=2, le=60),
     db: Session = Depends(get_db),
@@ -155,6 +165,17 @@ def get_summary(
     prev_to = window.date_from - timedelta(days=1)
     prev_from = prev_to - timedelta(days=days - 1)
     history_from = window.date_from - timedelta(days=history_days)
+    scoped = module is not None or vendor is not None
+
+    # Pass rate strategy:
+    #   - Unscoped (no module/vendor filter): use test_run.passed/total — fast,
+    #     and matches how Playwright reports "passed-on-first-try" semantics.
+    #   - Scoped: aggregate from per_day (counts test-days that ended green).
+    pass_rate_expr = (
+        "(SELECT COUNT(*) FILTER (WHERE status = 'passed')::float / NULLIF(COUNT(*), 0) * 100 FROM per_day)"
+        if scoped
+        else "(SELECT (COALESCE(SUM(passed), 0)::float / NULLIF(SUM(total), 0)) * 100 FROM window_runs)"
+    )
 
     sql = text(f"""
         WITH {_BASE_CTES},
@@ -197,46 +218,48 @@ def get_summary(
             JOIN test_run tr ON tr.id = tcr.run_id
             WHERE tr.run_date BETWEEN :history_from AND :hist_to_exclusive
               AND (:kind = 'all' OR tr.kind = :kind)
+              AND (:module IS NULL OR tcr.module = :module)
+              AND (:vendor IS NULL OR tcr.vendor = :vendor)
         ),
         window_uids AS (SELECT DISTINCT uid FROM labelled),
         agg AS (
             SELECT
                 (SELECT COUNT(*) FROM window_runs)                                    AS runs,
-                (SELECT COALESCE(SUM(passed), 0) FROM window_runs)::bigint            AS sum_passed,
-                (SELECT COALESCE(SUM(total),  0) FROM window_runs)::bigint            AS sum_total,
+                {pass_rate_expr}                                                      AS pass_rate,
                 (SELECT COUNT(*) FROM latest_day WHERE status IN ('failed','error'))  AS failing_tests,
                 (SELECT COUNT(*) FROM per_test
                   WHERE pass_days > 0 AND fail_days > 0)                              AS flaky_tests,
                 (SELECT COUNT(*) FROM streak_per_test WHERE streak_len >= :streak_days) AS failing_streak,
                 (SELECT COUNT(*) FROM history_uids h
                   WHERE NOT EXISTS (SELECT 1 FROM window_uids w WHERE w.uid = h.uid)) AS stale_tests
-        ),
-        prev_agg AS (
-            SELECT
-                COALESCE(SUM(passed), 0)::bigint AS sum_passed,
-                COALESCE(SUM(total),  0)::bigint AS sum_total
-            FROM test_run
-            WHERE run_date BETWEEN :prev_from AND :prev_to
-              AND (:kind = 'all' OR kind = :kind)
         )
-        SELECT a.*, p.sum_passed AS prev_passed, p.sum_total AS prev_total
-        FROM agg a CROSS JOIN prev_agg p
+        SELECT * FROM agg
     """)
 
     params = {
         "date_from": window.date_from,
         "date_to": window.date_to,
         "kind": kind,
+        "module": module,
+        "vendor": vendor,
         "history_from": history_from,
         "hist_to_exclusive": window.date_from - timedelta(days=1),
         "streak_days": streak_days,
-        "prev_from": prev_from,
-        "prev_to": prev_to,
     }
     r = db.execute(sql, params).one()
 
-    pass_rate = round(r.sum_passed / r.sum_total * 100, 2) if r.sum_total else None
-    pass_rate_prev = round(r.prev_passed / r.prev_total * 100, 2) if r.prev_total else None
+    pass_rate = round(r.pass_rate, 2) if r.pass_rate is not None else None
+    if scoped:
+        pass_rate_prev = None
+    else:
+        prev = db.execute(
+            text(
+                "SELECT COALESCE(SUM(passed),0)::bigint AS sp, COALESCE(SUM(total),0)::bigint AS st "
+                "FROM test_run WHERE run_date BETWEEN :pf AND :pt AND (:kind = 'all' OR kind = :kind)"
+            ),
+            {"pf": prev_from, "pt": prev_to, "kind": kind},
+        ).one()
+        pass_rate_prev = round(prev.sp / prev.st * 100, 2) if prev.st else None
 
     return ExecutionSummary(
         runs=r.runs,
@@ -254,29 +277,61 @@ def get_summary(
 def get_heatmap(
     days: int = Query(10, ge=1, le=60),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     window = _window(db, days)
-    sql = text("""
-        SELECT
-            kind,
-            CASE WHEN kind = 'playwright' THEN COALESCE(suite, '?') ELSE 'surefire' END AS row_key_part,
-            run_date,
-            COUNT(*)                                                           AS runs,
-            COALESCE(SUM(total),   0)::bigint                                  AS total,
-            COALESCE(SUM(passed),  0)::bigint                                  AS passed,
-            COALESCE(SUM(failed),  0)::bigint                                  AS failed,
-            COALESCE(SUM(errors),  0)::bigint                                  AS errors,
-            COALESCE(SUM(skipped), 0)::bigint                                  AS skipped,
-            BOOL_OR(top_level_error IS NOT NULL AND total = 0)                 AS build_failed
-        FROM test_run
-        WHERE run_date BETWEEN :date_from AND :date_to
-          AND (:kind = 'all' OR kind = :kind)
-        GROUP BY kind, row_key_part, run_date
-        ORDER BY kind, row_key_part, run_date
-    """)
+    scoped = module is not None or vendor is not None
+
+    if scoped:
+        # When scoped, build cells from test_case_result so counts reflect
+        # only the module/vendor's tests (run-level totals would include the
+        # whole suite). One run per (suite, date) still drives the `runs`
+        # column; `build_failed` follows the parent run's top_level_error.
+        sql = text("""
+            SELECT
+                tr.kind,
+                CASE WHEN tr.kind = 'playwright' THEN COALESCE(tr.suite, '?') ELSE 'surefire' END AS row_key_part,
+                tr.run_date,
+                COUNT(DISTINCT tr.id)                                          AS runs,
+                COUNT(*)                                                       AS total,
+                COUNT(*) FILTER (WHERE tcr.status = 'passed')                  AS passed,
+                COUNT(*) FILTER (WHERE tcr.status = 'failed')                  AS failed,
+                COUNT(*) FILTER (WHERE tcr.status = 'error')                   AS errors,
+                COUNT(*) FILTER (WHERE tcr.status = 'skipped')                 AS skipped,
+                BOOL_OR(tr.top_level_error IS NOT NULL AND tr.total = 0)       AS build_failed
+            FROM test_run tr
+            JOIN test_case_result tcr ON tcr.run_id = tr.id
+            WHERE tr.run_date BETWEEN :date_from AND :date_to
+              AND (:kind = 'all' OR tr.kind = :kind)
+              AND (:module IS NULL OR tcr.module = :module)
+              AND (:vendor IS NULL OR tcr.vendor = :vendor)
+            GROUP BY tr.kind, row_key_part, tr.run_date
+            ORDER BY tr.kind, row_key_part, tr.run_date
+        """)
+    else:
+        sql = text("""
+            SELECT
+                kind,
+                CASE WHEN kind = 'playwright' THEN COALESCE(suite, '?') ELSE 'surefire' END AS row_key_part,
+                run_date,
+                COUNT(*)                                                           AS runs,
+                COALESCE(SUM(total),   0)::bigint                                  AS total,
+                COALESCE(SUM(passed),  0)::bigint                                  AS passed,
+                COALESCE(SUM(failed),  0)::bigint                                  AS failed,
+                COALESCE(SUM(errors),  0)::bigint                                  AS errors,
+                COALESCE(SUM(skipped), 0)::bigint                                  AS skipped,
+                BOOL_OR(top_level_error IS NOT NULL AND total = 0)                 AS build_failed
+            FROM test_run
+            WHERE run_date BETWEEN :date_from AND :date_to
+              AND (:kind = 'all' OR kind = :kind)
+            GROUP BY kind, row_key_part, run_date
+            ORDER BY kind, row_key_part, run_date
+        """)
     rows = db.execute(sql, {
-        "date_from": window.date_from, "date_to": window.date_to, "kind": kind,
+        "date_from": window.date_from, "date_to": window.date_to,
+        "kind": kind, "module": module, "vendor": vendor,
     }).all()
 
     grouped: dict[tuple[str, str], HeatmapRow] = {}
@@ -322,37 +377,61 @@ def get_heatmap(
 def get_trends(
     days: int = Query(30, ge=1, le=180),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     window = _window(db, days)
+    scoped = module is not None or vendor is not None
 
     if kind == "playwright":
-        group_expr = "COALESCE(suite, '?')"
+        group_expr = "COALESCE(tr.suite, '?')" if scoped else "COALESCE(suite, '?')"
         key_prefix = "playwright:"
     elif kind == "surefire":
         group_expr = "'surefire'"
         key_prefix = "surefire:"
     else:
-        group_expr = "kind"
+        group_expr = "tr.kind" if scoped else "kind"
         key_prefix = ""
 
-    sql = text(f"""
-        SELECT
-            {group_expr}                AS series_key,
-            kind,
-            run_date,
-            COUNT(*)                    AS runs,
-            COALESCE(SUM(passed), 0)::bigint AS sum_passed,
-            COALESCE(SUM(failed),  0)::bigint AS sum_failed,
-            COALESCE(SUM(errors),  0)::bigint AS sum_errors
-        FROM test_run
-        WHERE run_date BETWEEN :date_from AND :date_to
-          AND (:kind = 'all' OR kind = :kind)
-        GROUP BY series_key, kind, run_date
-        ORDER BY series_key, run_date
-    """)
+    if scoped:
+        sql = text(f"""
+            SELECT
+                {group_expr}              AS series_key,
+                tr.kind                   AS kind,
+                tr.run_date               AS run_date,
+                COUNT(DISTINCT tr.id)     AS runs,
+                COUNT(*) FILTER (WHERE tcr.status = 'passed')                AS sum_passed,
+                COUNT(*) FILTER (WHERE tcr.status = 'failed')                AS sum_failed,
+                COUNT(*) FILTER (WHERE tcr.status = 'error')                 AS sum_errors
+            FROM test_run tr
+            JOIN test_case_result tcr ON tcr.run_id = tr.id
+            WHERE tr.run_date BETWEEN :date_from AND :date_to
+              AND (:kind = 'all' OR tr.kind = :kind)
+              AND (:module IS NULL OR tcr.module = :module)
+              AND (:vendor IS NULL OR tcr.vendor = :vendor)
+            GROUP BY series_key, tr.kind, tr.run_date
+            ORDER BY series_key, tr.run_date
+        """)
+    else:
+        sql = text(f"""
+            SELECT
+                {group_expr}                AS series_key,
+                kind,
+                run_date,
+                COUNT(*)                    AS runs,
+                COALESCE(SUM(passed), 0)::bigint AS sum_passed,
+                COALESCE(SUM(failed),  0)::bigint AS sum_failed,
+                COALESCE(SUM(errors),  0)::bigint AS sum_errors
+            FROM test_run
+            WHERE run_date BETWEEN :date_from AND :date_to
+              AND (:kind = 'all' OR kind = :kind)
+            GROUP BY series_key, kind, run_date
+            ORDER BY series_key, run_date
+        """)
     rows = db.execute(sql, {
-        "date_from": window.date_from, "date_to": window.date_to, "kind": kind,
+        "date_from": window.date_from, "date_to": window.date_to,
+        "kind": kind, "module": module, "vendor": vendor,
     }).all()
 
     series_map: dict[str, TrendSeries] = {}
@@ -388,6 +467,8 @@ _PER_TEST_SQL_BODY = f"""
             MAX(test_name)                                           AS test_name,
             MAX(class_or_file)                                       AS class_or_file,
             MAX(package_or_suite)                                    AS package_or_suite,
+            MAX(module)                                              AS module,
+            MAX(vendor)                                              AS vendor,
             MIN(run_date)                                            AS first_seen,
             MAX(run_date)                                            AS last_seen,
             MAX(run_date) FILTER (WHERE status = 'passed')           AS last_passed,
@@ -433,6 +514,8 @@ _PER_TEST_SQL_BODY = f"""
             pt.test_name,
             pt.class_or_file,
             pt.package_or_suite,
+            pt.module,
+            pt.vendor,
             pt.first_seen,
             pt.last_seen,
             pt.last_passed,
@@ -462,6 +545,8 @@ def _row_to_toi(r) -> TestOfInterest:
         test_name=r.test_name,
         class_or_file=r.class_or_file,
         package_or_suite=r.package_or_suite,
+        module=r.module,
+        vendor=r.vendor,
         last_status=r.last_status,
         last_seen=r.last_seen,
         last_passed=r.last_passed,
@@ -481,6 +566,8 @@ def _row_to_toi(r) -> TestOfInterest:
 def get_failing(
     days: int = Query(10, ge=1, le=60),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
@@ -494,7 +581,7 @@ def get_failing(
     """)
     rows = db.execute(sql, {
         "date_from": window.date_from, "date_to": window.date_to,
-        "kind": kind, "limit": limit,
+        "kind": kind, "module": module, "vendor": vendor, "limit": limit,
     }).all()
     return [_row_to_toi(r) for r in rows]
 
@@ -503,6 +590,8 @@ def get_failing(
 def get_flaky(
     days: int = Query(10, ge=1, le=60),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
@@ -517,7 +606,7 @@ def get_flaky(
     """)
     rows = db.execute(sql, {
         "date_from": window.date_from, "date_to": window.date_to,
-        "kind": kind, "limit": limit,
+        "kind": kind, "module": module, "vendor": vendor, "limit": limit,
     }).all()
     return [_row_to_toi(r) for r in rows]
 
@@ -527,6 +616,8 @@ def get_failing_streak(
     days: int = Query(30, ge=2, le=120),
     streak_days: int = Query(7, ge=2, le=60),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
@@ -546,7 +637,8 @@ def get_failing_streak(
     """)
     rows = db.execute(sql, {
         "date_from": window.date_from, "date_to": window.date_to,
-        "kind": kind, "streak_days": streak_days, "limit": limit,
+        "kind": kind, "module": module, "vendor": vendor,
+        "streak_days": streak_days, "limit": limit,
     }).all()
     return [_row_to_toi(r) for r in rows]
 
@@ -556,6 +648,8 @@ def get_stale(
     days: int = Query(10, ge=1, le=60),
     history_days: int = Query(30, ge=1, le=365),
     kind: KindFilter = Query("all"),
+    module: str | None = Query(None),
+    vendor: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
@@ -578,15 +672,18 @@ def get_stale(
                 tcr.kind, tcr.test_name,
                 COALESCE(tcr.class_fqn, tcr.test_file) AS class_or_file,
                 COALESCE(tcr.package_name, tr.suite, tcr.suite_path) AS package_or_suite,
+                tcr.module, tcr.vendor,
                 tcr.status, tcr.started_at, tr.run_date
             FROM test_case_result tcr
             JOIN test_run tr ON tr.id = tcr.run_id
             WHERE tr.run_date BETWEEN :history_from AND :history_to_exclusive
               AND (:kind = 'all' OR tr.kind = :kind)
+              AND (:module IS NULL OR tcr.module = :module)
+              AND (:vendor IS NULL OR tcr.vendor = :vendor)
         ),
         history_latest AS (
             SELECT DISTINCT ON (uid)
-                uid, kind, test_name, class_or_file, package_or_suite,
+                uid, kind, test_name, class_or_file, package_or_suite, module, vendor,
                 run_date, status
             FROM labelled_all
             ORDER BY uid, run_date DESC, started_at DESC NULLS LAST
@@ -601,8 +698,11 @@ def get_stale(
             JOIN test_run tr ON tr.id = tcr.run_id
             WHERE tr.run_date BETWEEN :date_from AND :date_to
               AND (:kind = 'all' OR tr.kind = :kind)
+              AND (:module IS NULL OR tcr.module = :module)
+              AND (:vendor IS NULL OR tcr.vendor = :vendor)
         )
         SELECT h.uid, h.kind, h.test_name, h.class_or_file, h.package_or_suite,
+               h.module, h.vendor,
                h.run_date AS last_seen, h.status AS last_status_seen,
                (:date_to - h.run_date) AS days_absent
         FROM history_latest h
@@ -614,7 +714,7 @@ def get_stale(
         "date_from": window.date_from, "date_to": window.date_to,
         "history_from": history_from,
         "history_to_exclusive": history_to_exclusive,
-        "kind": kind, "limit": limit,
+        "kind": kind, "module": module, "vendor": vendor, "limit": limit,
     }).all()
     return [
         StaleTest(
@@ -623,9 +723,75 @@ def get_stale(
             test_name=r.test_name,
             class_or_file=r.class_or_file,
             package_or_suite=r.package_or_suite,
+            module=r.module,
+            vendor=r.vendor,
             last_seen=r.last_seen,
             last_status_seen=r.last_status_seen,
             days_absent=r.days_absent,
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# /modules — populate the module/vendor filter UI.
+# ---------------------------------------------------------------------------
+
+@router.get("/modules", response_model=ModulesOut)
+def get_modules(
+    days: int = Query(10, ge=1, le=60),
+    kind: KindFilter = Query("all"),
+    db: Session = Depends(get_db),
+):
+    """Distinct modules + vendors with their per-window test/run counts."""
+    window = _window(db, days)
+
+    module_sql = text("""
+        SELECT
+            tcr.module                      AS module,
+            CASE WHEN COUNT(DISTINCT tcr.kind) = 1 THEN MAX(tcr.kind) ELSE NULL END AS kind,
+            COUNT(DISTINCT (
+                CASE
+                    WHEN tcr.kind = 'surefire' THEN 'surefire:' || COALESCE(tcr.class_fqn, '?') || ':' || tcr.test_name
+                    ELSE                          'playwright:' || COALESCE(tcr.test_file, '?') || ':' || tcr.test_name
+                END
+            )) AS tests,
+            COUNT(DISTINCT tr.id) AS runs_touched
+        FROM test_case_result tcr
+        JOIN test_run tr ON tr.id = tcr.run_id
+        WHERE tr.run_date BETWEEN :date_from AND :date_to
+          AND (:kind = 'all' OR tr.kind = :kind)
+          AND tcr.module IS NOT NULL
+        GROUP BY tcr.module
+        ORDER BY tests DESC
+    """)
+    vendor_sql = text("""
+        SELECT
+            tcr.vendor AS module,
+            CASE WHEN COUNT(DISTINCT tcr.kind) = 1 THEN MAX(tcr.kind) ELSE NULL END AS kind,
+            COUNT(DISTINCT (
+                CASE
+                    WHEN tcr.kind = 'surefire' THEN 'surefire:' || COALESCE(tcr.class_fqn, '?') || ':' || tcr.test_name
+                    ELSE                          'playwright:' || COALESCE(tcr.test_file, '?') || ':' || tcr.test_name
+                END
+            )) AS tests,
+            COUNT(DISTINCT tr.id) AS runs_touched
+        FROM test_case_result tcr
+        JOIN test_run tr ON tr.id = tcr.run_id
+        WHERE tr.run_date BETWEEN :date_from AND :date_to
+          AND (:kind = 'all' OR tr.kind = :kind)
+          AND tcr.vendor IS NOT NULL
+        GROUP BY tcr.vendor
+        ORDER BY tests DESC
+    """)
+    params = {"date_from": window.date_from, "date_to": window.date_to, "kind": kind}
+
+    modules = [
+        ModuleCount(module=r.module, kind=r.kind, tests=r.tests, runs_touched=r.runs_touched)
+        for r in db.execute(module_sql, params).all()
+    ]
+    vendors = [
+        ModuleCount(module=r.module, kind=r.kind, tests=r.tests, runs_touched=r.runs_touched)
+        for r in db.execute(vendor_sql, params).all()
+    ]
+    return ModulesOut(modules=modules, vendors=vendors)

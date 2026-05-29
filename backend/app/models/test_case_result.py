@@ -55,9 +55,12 @@ class TestCaseResult(Base):
     error_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     step_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attachment_names: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    module: Mapped[str | None] = mapped_column(String, nullable=True)
+    vendor: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("idx_test_case_result_run", "run_id"),
         Index("idx_test_case_result_kind_status", "kind", "status"),
         Index("idx_test_case_result_kind_name_started", "kind", "test_name", "started_at"),
+        Index("idx_test_case_result_kind_module", "kind", "module"),
     )

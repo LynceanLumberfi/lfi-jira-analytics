@@ -13,6 +13,7 @@ from app.api.dimensions import router as dimensions_router
 from app.api.failed_records import router as failed_records_router
 from app.api.integrations import router as integrations_router
 from app.api.issues import router as issues_router
+from app.api.s3_pull import router as s3_pull_router
 from app.api.sanitize import router as sanitize_router
 from app.api.score import router as score_router
 from app.api.staging import router as staging_router
@@ -91,6 +92,7 @@ app.include_router(analytics_router)
 app.include_router(issues_router)
 app.include_router(test_coverage_router)
 app.include_router(test_execution_router)
+app.include_router(s3_pull_router)
 
 
 @app.get("/health")

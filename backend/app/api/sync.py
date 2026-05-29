@@ -23,6 +23,7 @@ _KIND_TO_TRIGGERED_BY = {
     "promote": SyncState.TRIGGERED_BY_PROMOTE,
     "sanitize": SyncState.TRIGGERED_BY_SANITIZE,
     "score": SyncState.TRIGGERED_BY_SCORE,
+    "s3-pull": SyncState.TRIGGERED_BY_S3_PULL,
 }
 
 
@@ -47,7 +48,7 @@ def _apply_kind_filter(stmt, kind: str | None):
     return stmt.where(SyncState.triggered_by == target)
 
 
-KindLiteral = Literal["sync", "promote", "sanitize", "score"]
+KindLiteral = Literal["sync", "promote", "sanitize", "score", "s3-pull"]
 
 
 def _ensure_aware(dt: datetime | None) -> datetime | None:
